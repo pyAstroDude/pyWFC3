@@ -1,2 +1,2 @@
-graft src
+graft pywfc3
 recursive-exclude __pycache__*.py[cod]
