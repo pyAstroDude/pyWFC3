@@ -22,5 +22,5 @@ git clone git@github.com:pyAstroDude/pyWFC3.git
 4. Install package using pip.
 ```shell
 cd pyWFC3
-pip install .
+pip install -e .
 ```
