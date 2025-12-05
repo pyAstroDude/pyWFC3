@@ -15,6 +15,9 @@ conda activate pywfc3_utils
 ```
 
 3. Clone the pyWFC3 package.
+```setup
+git clone git@github.com:pyAstroDude/pyWFC3.git
+```
 
 4. Install package using pip.
 ```shell
