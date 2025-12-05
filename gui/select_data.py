@@ -524,8 +524,8 @@ class MainWindow(QMainWindow):
         
 
 
-    def main():
-        app = QApplication(sys.argv)
-        window = select_data.MainWindow()
-        window.show()
-        sys.exit(app.exec_())
+def main():
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
