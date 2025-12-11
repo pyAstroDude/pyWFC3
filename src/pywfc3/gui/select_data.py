@@ -310,7 +310,7 @@ class MainWindow(QMainWindow):
                     if not col_name in df_unsorted.columns:
                         df_unsorted[col_name] = False
                 
-                df = df_unsorted.sort_values(by=["Viewed"]).reset_index(drop=True).copy()
+                df = df_unsorted.sort_values(by=["Viewed", "Filename"]).reset_index(drop=True).copy()
                 self.viewed = len(df["Viewed"][df["Viewed"]==True]) - 1
             else:
                 print("\n Input directory or file not found.")
