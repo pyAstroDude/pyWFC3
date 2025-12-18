@@ -29,6 +29,11 @@ def main():
                         help='Full path to the input directory where the ' +
                         'input manifest is stored. Default is current ' +
                         'working directory.')
+    parser.add_argument('-d', '--datadir', dest='datadir', type=str,
+                        action='store', default='data',
+                        help='Full path to the input data irectory where ' +
+                        'the input data fits files are stored. Default is '+
+                        'current working directory.')
     parser.add_argument('-o', '--outpath', dest='outdir', type=str,
                         action='store', default=None,
                         help='Name of the output directory where the ' +
@@ -41,22 +46,25 @@ def main():
                         'D-flat.')
     
     args = parser.parse_args()
-    print(f"All Arguments: {args}")
+    # print(f"All Arguments: {args}")
     
     mf = MakeDFlat.MakeDFlat()
     
     if args.inpath != os.getcwd():
-        inpath = mf.check_input_path(args.inpath)
+        mf.check_directory(args.inpath)
     else:
-        inpath = args.inpath
+        mf.inpath = args.inpath
+    
+    mf.check_directory(args.datadir, data_dir=True)
     
     if args.outdir is None:
         outpath = mf.get_output_directory()
     else:
         outpath = mf.get_output_directory(name=args.outdir)
     
-    print(f"INPATH: {inpath}")
-    print(f"OUTPATH: {outpath}")
+    print(f"INPATH: {mf.inpath}")
+    print(f"DATADIR: {mf.datadir}")
+    print(f"OUTPATH: {mf.outpath}")
     
     sys.exit()
     
