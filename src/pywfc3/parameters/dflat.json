@@ -1,1 +1,7 @@
-{"InputDirectory" = "./""DataDirectory" = "./data/fits""OutputDirectory" = "./proc""Manifest" = "manifest.txt""RunSteps" = "all"}
+{
+    "InputDirectory": "./",
+    "DataDirectory": "./data/fits",
+    "OutputDirectory": "./proc",
+    "Manifest": "manifest.txt",
+    "RunSteps": "all"
+}

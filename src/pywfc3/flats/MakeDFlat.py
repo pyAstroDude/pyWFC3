@@ -10,15 +10,18 @@ This is the class that can be used to run the procedures list in WFC3 ISR
 """
 import os
 import sys
-# import json
-# import warnings
+import json
+import warnings
+import importlib.resources
 
-from glob import glob
+# from glob import glob
+from pywfc3 import utils 
 
 class MakeDFlat(object):
     """Class to generate WFC3 IR D-flat"""
     
     def __init__(self):
+        self.params = None
         self.inpath = None
         self.datadir = None
         self.outpath = None
@@ -32,88 +35,6 @@ class MakeDFlat(object):
         self.sigma = None
         self.edge = 8
         self.rate_outpath = None
-        
-    
-    
-    def check_directory(self, input_dir, data_dir=False):
-        """
-        This method checks if the input directory exists and if it does
-        then updates the approprite class variable. If the data_dir flag 
-        is set then the function checks for the existence of the diretory
-        as well as the existance of any fits data file. If the directories
-        are not found then the class cariables are set to None
-
-        Parameters
-        ----------
-        input_file : str
-            Input path to check.
-        
-        data_dir : bool
-            Boolean flag to check if there is any fits data in the
-            input_dir. Deafult is false i.e., no checking for fits 
-            data files.
-
-        Returns
-        -------
-        MakeDFlat.inpath : str
-            Returns the inpath variables of MakeDFlat class. If data_dir
-            is set then returns the datadir variable of MakeDFlat.
-
-        """
-        
-        user_directory = os.path.abspath(input_dir)
-        
-        if data_dir:
-            data_directory = os.path.join(user_directory, 'fits')
-            if not os.path.isdir(data_directory):
-                data_directory = user_directory
-            
-            if not os.path.isdir(data_directory):
-                print("Data directory does not exist. Exiting ......")
-            
-            self.datadir = data_directory
-            input_directory = data_directory
-
-            files_list = glob(os.path.join(data_directory, '*.fits'))
-            if len(files_list) == 0:
-                print("Did not find any fits data file in the data directory:")
-                print(f"{data_directory}")
-            
-        else:
-            input_directory = user_directory
-            if not os.path.isdir(input_directory):
-                print("Using current directory as input directory.")
-                input_directory = os.getcwd()
-            self.inpath = input_directory
-
-    
-    
-    def get_output_directory(self, name=None):
-        """
-        This method checks the existence of the output directory, either
-        at the deafult location './data/proc' or user supplied name variable.
-        If the directory does not exists the methodd creates it.
-
-        Parameters
-        ----------
-        name : str, optional
-            Name of the user supplied directory. The default is None. 
-
-        Returns
-        -------
-        MakeDFlat.outpath : str
-
-        """
-        
-        if name is None:
-            output_directory = os.getcwd() + '/proc'
-        else:
-            output_directory = os.path.abspath(name)
-        
-        if not os.path.isdir(output_directory):
-            os.makedirs(output_directory)
-        
-        self.outpath = output_directory
     
     
     
@@ -135,10 +56,59 @@ class MakeDFlat(object):
 
         """
         
-        ### python dictionary varaible name to hold all the parameters.
+        # Determine the path to the default dflat.json file using importlib
         params = {}
-        
+        try:
+            default_param_dir = importlib.resources.files('pywfc3.parameters')
+            default_param_file = default_param_dir.joinpath('dflat.json')
+            with importlib.resources.as_file(default_param_file) as p_file:
+                try:
+                    with open(p_file, 'r') as f:
+                        params = json.load(f)
+                except json.JSONDecodeError as e:
+                    warnings.warn(f"Error decoding default parameter file {p_file}: {e}")
+        except ModuleNotFoundError:
+            warnings.warn("Could not find pywfc3.parameters module. Default parameters not loaded.")
+            params = {}
+
+        # If user provided a paramfile, check if it exists and update params
+        if paramfile:
+            if os.path.exists(paramfile):
+                try:
+                    with open(paramfile, 'r') as f:
+                        user_params = json.load(f)
+                        params.update(user_params)
+                except json.JSONDecodeError as e:
+                    warnings.warn(f"Error decoding user parameter file {paramfile}: {e}")
+            else:
+                 warnings.warn(f"User parameter file not found: {paramfile}")
+                 
+        self.params = params
+
         return params
     
     
-   
+    def setup_directories(self, params):
+        """
+        Check if the input and data directories exist and create the output
+        directory if it does not exist.
+
+        Parameters
+        ----------
+        params : dict
+            Dictionary of parameters.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.inpath = utils.check_directory(params['InputDirectory'])
+        self.datadir = utils.check_directory(params['DataDirectory'], 
+                                             data_dir=True)
+        self.outpath = utils.get_output_directory(name=params['OutputDirectory'])
+        
+        
+        
+        

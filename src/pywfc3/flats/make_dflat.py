@@ -14,6 +14,7 @@ import os
 import sys
 import argparse
 
+from pywfc3 import utils
 from pywfc3.flats import MakeDFlat 
 
 def main():
@@ -50,21 +51,19 @@ def main():
     
     mf = MakeDFlat.MakeDFlat()
     
-    if args.inpath != os.getcwd():
-        mf.check_directory(args.inpath)
+    if args.config is None:
+        params = mf.read_params_file()
     else:
-        mf.inpath = args.inpath
-    
-    mf.check_directory(args.datadir, data_dir=True)
-    
-    if args.outdir is None:
-        outpath = mf.get_output_directory()
-    else:
-        outpath = mf.get_output_directory(name=args.outdir)
-    
+        params = mf.read_params_file(args.config)
+        
+    mf.setup_directories(params)
+   
+    print("\n")
     print(f"INPATH: {mf.inpath}")
     print(f"DATADIR: {mf.datadir}")
-    print(f"OUTPATH: {mf.outpath}")
+    print(f"OUTPATH: {mf.outpath}\n")
+    
+    print(params)
     
     sys.exit()
     
