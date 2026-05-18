@@ -8,13 +8,16 @@ Created on Thu Dec 18 11:34:35 2025
 This is the class that can be used to run the procedures list in WFC3 ISR 
 2021-10 to generate a WFC3 IR D-Flat.
 """
-import os
+
 import sys
 import json
 import warnings
 import importlib.resources
+from pathlib import Path
 
-# from glob import glob
+import pandas as pd
+from astropy.io import fits
+
 from pywfc3 import utils 
 
 class MakeDFlat(object):
@@ -73,7 +76,7 @@ class MakeDFlat(object):
 
         # If user provided a paramfile, check if it exists and update params
         if paramfile:
-            if os.path.exists(paramfile):
+            if Path(paramfile).exists():
                 try:
                     with open(paramfile, 'r') as f:
                         user_params = json.load(f)
@@ -110,5 +113,87 @@ class MakeDFlat(object):
         self.outpath = utils.get_output_directory(name=params['OutputDirectory'])
         
         
+    def read_manifest(self, manifest):
+        """ Read the input manifest and generate a list of files
+        to process."""
+        
+        # Define the input manifest and check its existence.
+        try:
+            input_manifest = Path(manifest).resolve(strict=True)
+            
+            with input_manifest.open() as f:
+                flist = [line.strip() for line in f]
+            
+            if len(flist) == 0:
+                sys.exit(f"nput manifest, {manifest}, is empty.")
+            else:
+                flist.sort()
+                self.filelist = flist
+            
+            self.manifest = input_manifest
+        except FileNotFoundError():
+            sys.exit(f"Input manifest, {manifest}, does not exist.")
+        
+        return self.filelist
+    
+    
+    def make_dataframe(self, filelist):
+        """Read the filelist and genarate a data frame with the 
+        filenames and all the relevent metadata."""
+        
+        meta_data = {'FILEPATH': [],
+                     'FILENAME': [],
+                     'INSTRUME': [],
+                     'OBSTYPE': [],
+                     'FILTER': [],
+                     'DETECTOR': [],
+                     'SAMP_SEQ': [],
+                     'NSAMP': [],
+                     'DATE-OBS': []
+                     }
+        
+        for file in filelist:
+            try:
+                hdr = fits.getheader(file)
+                meta_data['FILEPATH'].append(Path(file).resolve(strict=True))
+                for key in meta_data.keys():
+                    if not key == 'FILEPATH':
+                        meta_data[key].append(hdr[key])    
+                
+            except (OSError, FileNotFoundError) as error:
+                print("\nERROR: File maybe missing or corrupted.")
+                print(f"ERROR: {error}\n")
+        
+        input_df = pd.DataFrame(meta_data)
+        
+        self.df = input_df
+        
+        return self.df
+        
+    
+    def validate_df(self, input_df):
+        
+        return self.df
+    
+    
+    def get_mask(self, m_file, mask_out=None, edge=None, save=False):
+        # Place holder
+        flat_mask = []
+        
+        return flat_mask
+        
+    
+    def get_delta_threshold(self, band):
+        # Place holder
+        thres = []
+        
+        return thres
+        
+    
+    def generate_flat(self, input_df, mask=None, dthres=None, method="mean",
+                      outfile=None, save=False):
+        #place holder 
+        outflat = []
         
         
+        return outflat

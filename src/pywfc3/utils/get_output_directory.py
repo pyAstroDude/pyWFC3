@@ -6,7 +6,7 @@ Created on Fri Dec 19 10:52:01 2025
 @author: sshenoy
 """
 
-import os
+from pathlib import Path
 
 def get_output_directory(name=None):
     """
@@ -26,14 +26,13 @@ def get_output_directory(name=None):
     """
     
     if name is None:
-        output_directory = os.getcwd() + '/proc'
+        output_directory = Path.cwd() + '/proc'
     else:
-        output_directory = os.path.abspath(name)
+        output_directory = Path(name).resolve()
     
-    if not os.path.isdir(output_directory):
-        os.makedirs(output_directory)
-    
-    print(" Created output directory: ")
-    print(f"    {output_directory}")
+    if not output_directory.is_dir():
+        output_directory.mkdir(parents=True)
+        print(" Created output directory: ")
+        print(f"    {output_directory}")
     
     return output_directory

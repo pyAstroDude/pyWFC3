@@ -10,11 +10,19 @@ individual steps) from WFC3 ISR 2021-10 to generate WFC3 IR D-Flat.
 """
 
 
-import os
+# import os
 import sys
 import argparse
+from pathlib import Path
+from pprint import pprint
 
-from pywfc3 import utils
+def valid_dir(path_str):
+    p = Path(path_str)
+    if not p.is_dir():
+        raise argparse.ArgumentTypeError(f"'{path_str}' is not a valid directory")
+    return p
+
+# from pywfc3 import utils
 from pywfc3.flats import MakeDFlat 
 
 def main():
@@ -22,11 +30,11 @@ def main():
     parser = argparse.ArgumentParser(description='Genarate WFC3 IR D-Flat ' +
                                      'using the input manifest and a JSON.' +
                                      'parameter file.')
-    parser.add_argument('manifest', metavar='manifest', type=str, nargs=1,
+    parser.add_argument('manifest', metavar='manifest', type=str, 
                         help='Name of the input manifest listing ' +
                         'the files to process.')
-    parser.add_argument('-i', '--inpath', dest='inpath', type=str,
-                        action='store', default=os.getcwd(),
+    parser.add_argument('-i', '--inpath', dest='inpath', type=valid_dir,
+                        action='store', default=Path.cwd(),
                         help='Full path to the input directory where the ' +
                         'input manifest is stored. Default is current ' +
                         'working directory.')
@@ -55,15 +63,25 @@ def main():
         params = mf.read_params_file()
     else:
         params = mf.read_params_file(args.config)
+    
+    ### This is for debugging. Remove once code is robust.
+    # print()
+    # pprint(params)
         
     mf.setup_directories(params)
-   
-    print("\n")
-    print(f"INPATH: {mf.inpath}")
-    print(f"DATADIR: {mf.datadir}")
-    print(f"OUTPATH: {mf.outpath}\n")
     
-    print(params)
+    files_list = mf.read_manifest(args.manifest)
+    
+    files_df = mf.make_dataframe(files_list)
+    
+    ### This is for debugging. Remove once code is robust.
+    print()
+    print(files_df.head().to_string(), "\n")
+    # print(f"INPATH: {mf.inpath}")
+    # print(f"DATADIR: {mf.datadir}")
+    # print(f"OUTPATH: {mf.outpath}")
+    # print(f"MANIFEST: {mf.manifest}")
+    # print(f"# of files: {len(mf.filelist)}\n")
     
     sys.exit()
     

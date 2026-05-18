@@ -6,8 +6,7 @@ Created on Fri Dec 19 10:45:46 2025
 @author: sshenoy
 """
 
-import os
-from glob import glob
+from pathlib import Path
 
 def check_directory(input_dir, data_dir=False):
     """
@@ -35,28 +34,29 @@ def check_directory(input_dir, data_dir=False):
 
     """
     
-    user_directory = os.path.abspath(input_dir)
+    user_directory = Path(input_dir)
+    user_directory = user_directory.resolve()
     
     if data_dir:
-        data_directory = os.path.join(user_directory, 'fits')
-        if not os.path.isdir(data_directory):
+        data_directory = user_directory / 'fits'
+        if not data_directory.is_dir():
             data_directory = user_directory
         
-        if not os.path.isdir(data_directory):
+        if not data_directory.is_dir():
             print(" Data directory does not exist. Returning None.")
 
-        files_list = glob(os.path.join(data_directory, '*.fits'))
+        files_list = list(data_directory.glob('*.fits'))
         if len(files_list) == 0:
             print(" Did not find any fits data file in the data directory:")
-            print(f"    {data_directory}")
+            print(f"\t{data_directory}".expandtabs(4))
         
         input_directory = data_directory
         
     else:
-        if not os.path.isdir(user_directory):
+        if not user_directory.is_dir():
             print(" User Directory not found. Using current directory as ")
             print("    input directory.")
-            input_directory = os.getcwd()
+            input_directory = Path.cwd()
         else:
             input_directory = user_directory
     
