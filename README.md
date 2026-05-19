@@ -35,4 +35,4 @@ following:
 ```shell
 export XPA_METHOD=local
 ```
-Don't forget to source you config file before using the selec_data gui.
+Don't forget to source you config file before using the select_data gui.
