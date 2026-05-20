@@ -16,11 +16,6 @@ import argparse
 from pathlib import Path
 from pprint import pprint
 
-def valid_dir(path_str):
-    p = Path(path_str)
-    if not p.is_dir():
-        raise argparse.ArgumentTypeError(f"'{path_str}' is not a valid directory")
-    return p
 
 # from pywfc3 import utils
 from pywfc3.flats import MakeDFlat 
@@ -30,20 +25,20 @@ def main():
     parser = argparse.ArgumentParser(description='Genarate WFC3 IR D-Flat ' +
                                      'using the input manifest and a JSON.' +
                                      'parameter file.')
-    parser.add_argument('manifest', metavar='manifest', type=str, 
+    parser.add_argument('Manifest', metavar='Manifest', type=str, 
                         help='Name of the input manifest listing ' +
                         'the files to process.')
-    parser.add_argument('-i', '--inpath', dest='inpath', type=valid_dir,
-                        action='store', default=Path.cwd(),
+    parser.add_argument('-i', '--inpath', dest='InputDirectory', type=str,
+                        action='store', default='./',
                         help='Full path to the input directory where the ' +
                         'input manifest is stored. Default is current ' +
                         'working directory.')
-    parser.add_argument('-d', '--datadir', dest='datadir', type=str,
+    parser.add_argument('-d', '--datadir', dest='DataDirectory', type=str,
                         action='store', default='data',
                         help='Full path to the input data irectory where ' +
                         'the input data fits files are stored. Default is '+
                         'current working directory.')
-    parser.add_argument('-o', '--outpath', dest='outdir', type=str,
+    parser.add_argument('-o', '--outpath', dest='OutputDirectory', type=str,
                         action='store', default=None,
                         help='Name of the output directory where the ' +
                         'processed files will be placed.')
@@ -53,42 +48,47 @@ def main():
                         'lists all the required input parameters to run ' +
                         'the steps from WFC3_ISR_2021-10 to generate the ' +
                         'D-flat.')
-    parser.add_argument('-f', '--filter', dest='filter', type=str,
+    parser.add_argument('-f', '--filter', dest='Filter', type=str,
                         action='store', default=None,
                         help='WFC3 IR filter/band to process. Default ' +
                         'is F140W.')
+    parser.add_argument('-t', '--thresholds', dest='Thresholds', type=float,
+                        nargs=3, default=[2.0, 5.0, 2.0])
     
     args = parser.parse_args()
     # print(f"All Arguments: {args}")
+    # print(vars(args).items())
     
-    mf = MakeDFlat.MakeDFlat()
+    mdf = MakeDFlat.MakeDFlat()
     
-    if args.config is None:
-        params = mf.read_params_file()
-    else:
-        params = mf.read_params_file(args.config)
+    # Get pipeline parameters from (priorities) CLI, user param file and 
+    # default param file.
+    params = mdf.get_pipeline_params(args)
     
     ### This is for debugging. Remove once code is robust.
     # print()
     # pprint(params)
         
-    mf.setup_directories(params)
+    # # Set up directories path.
+    mdf.setup_directories(params['InputDirectory'], is_input=True)
+    mdf.setup_directories(params['DataDirectory'], is_data=True)
+    mdf.setup_directories(params['OutputDirectory'], is_output=True)
     
-    files_list = mf.read_manifest(args.manifest)
+    # Read the manifest
+    files_list = mdf.read_manifest(params['Manifest'])
     
-    files_df = mf.make_dataframe(files_list)
+    # Make panda dataframe file IDs and FITS header info.
+    files_df = mdf.make_dataframe(files_list)
     
-    valid_df = mf.validate_df(files_df, band=args.filter)
+    # Validate the pandas dataframe.
+    valid_df = mdf.validate_df(files_df, band=args.Filter)
     
-    ### This is for debugging. Remove once code is robust.
-    print()
-    print(valid_df.head().to_string(), "\n")
-    # print(f"INPATH: {mf.inpath}")
-    # print(f"DATADIR: {mf.datadir}")
-    # print(f"OUTPATH: {mf.outpath}")
-    # print(f"MANIFEST: {mf.manifest}")
-    # print(f"# of files: {len(mf.filelist)}\n")
+    # for each input file mask outliers.
+    masked_df = mdf.mask_outlliers(valid_df, thresholds=params['Thresholds'],
+                                   ncores=params['Cores'])
     
-    sys.exit(f" Successfully processed data for {mf.band}.")
+    # print(masked_df.head().to_string())
+    print(valid_df.columns)
+    sys.exit(f" Successfully processed data for {mdf.band}.")
     
     

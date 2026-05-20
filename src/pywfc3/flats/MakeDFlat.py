@@ -12,8 +12,10 @@ This is the class that can be used to run the procedures list in WFC3 ISR
 import sys
 import json
 import warnings
+import multiprocessing
 import importlib.resources
 from pathlib import Path
+
 
 import numpy as np
 import pandas as pd
@@ -26,6 +28,7 @@ class MakeDFlat(object):
     
     def __init__(self):
         self.params = None
+        self.out_params = None
         self.inpath = None
         self.datadir = None
         self.outpath = None
@@ -41,58 +44,54 @@ class MakeDFlat(object):
         self.rate_outpath = None
     
     
-    
-    def read_params_file(self, paramfile=None):
-        """
-        Read the user supplied parameter file and set up the parameter 
-        dictionary. If file is the wrong type or not found then use 
-        deafult parameter JSONfile.
-
-        Parameters
-        ----------
-        paramfile : JSON, optional
-            Name of input parameter file in JSON format. Default is the 
-            dflat.json file that is provided in the pywfc3 package.
-
-        Returns
-        -------
-        A python dictionary of parameters key:value pairs.
-
-        """
+    def get_pipeline_params(self, cl_args):
         
-        # Determine the path to the default dflat.json file using importlib
         params = {}
+        print("\n Generating Pipeline Parameters.\n")
+        
+        
+        # 1. Start with Default JSON
         try:
             default_param_dir = importlib.resources.files('pywfc3.parameters')
             default_param_file = default_param_dir.joinpath('dflat.json')
             with importlib.resources.as_file(default_param_file) as p_file:
                 try:
                     with open(p_file, 'r') as f:
-                        params = json.load(f)
+                        params.update(json.load(f))
                 except json.JSONDecodeError as e:
-                    warnings.warn(f"Error decoding default parameter file {p_file}: {e}")
+                    warnings.warn(" WARNING: Could not decode default\n" + 
+                                  f" parameter file {p_file}: \n{e}")
         except ModuleNotFoundError:
-            warnings.warn("Could not find pywfc3.parameters module. Default parameters not loaded.")
-            params = {}
-
-        # If user provided a paramfile, check if it exists and update params
-        if paramfile:
-            if Path(paramfile).exists():
+            warnings.warn(" WARNING: Could not find pywfc3.parameters module.\n" + 
+                          " Default parameters not loaded.")
+    
+        # 2. Layer User-Provided JSON (Medium Priority)
+        if cl_args.config is not None:
+            usr_cfg_file = Path(cl_args.config).resolve()
+            if usr_cfg_file.is_file():
                 try:
-                    with open(paramfile, 'r') as f:
-                        user_params = json.load(f)
-                        params.update(user_params)
+                    with open(usr_cfg_file, 'r') as f:
+                        params.update(json.load(f))
                 except json.JSONDecodeError as e:
-                    warnings.warn(f"Error decoding user parameter file {paramfile}: {e}")
-            else:
-                 warnings.warn(f"User parameter file not found: {paramfile}")
-                 
+                    warnings.warn(" WARNING: Could not decode user's\n" + 
+                                  f" parameter file {usr_cfg_file.name}:\n{e}")
+    
+        # 3. Layer CLI Overrides (Highest Priority)
+        # Only update keys if the user actually passed them via command line
+        for key, value in vars(cl_args).items():
+            if value is not None and key != 'config':
+                cl_overrides = {key: value}
+                
+        params.update(cl_overrides)
+        
         self.params = params
-
+        self.out_params = params.copy()
+    
         return params
     
     
-    def setup_directories(self, params):
+    def setup_directories(self, dir_name, is_input=False, is_data=False,
+                          is_output=False):
         """
         Check if the input and data directories exist and create the output
         directory if it does not exist.
@@ -108,32 +107,56 @@ class MakeDFlat(object):
 
         """
         
-        self.inpath = utils.check_directory(params['InputDirectory'])
-        self.datadir = utils.check_directory(params['DataDirectory'], 
-                                             data_dir=True)
-        self.outpath = utils.get_output_directory(name=params['OutputDirectory'])
+        # Set input (working) directory
+        if is_input:
+            self.inpath = utils.check_directory(dir_name)
+            self.out_params['InputDirectory'] = str(self.inpath)
+            print(f" Found Input Directory: \n {self.inpath}\n")
+        
+        # Set up data directory.
+        if is_data:
+            self.datadir = utils.check_directory(dir_name, data_dir=True)
+            self.out_params['DataDirectory'] = str(self.datadir)
+            print(f" Found Data Directory: \n {self.datadir}\n")
+        
+        # Set up output directory.
+        if is_output:
+            if dir_name is not None:
+                out_name = Path(dir_name) / self.params['Filter']
+            else:
+                out_name = Path('./proc') / self.params['Filter']
+                
+            self.outpath = utils.get_output_directory(name=out_name)
+            
+            print(f" Setting Output Directory: \n {self.outpath}\n")  
+            self.out_params['OutputDirectory'] = str(self.outpath)
+            
         
         
     def read_manifest(self, manifest):
         """ Read the input manifest and generate a list of files
         to process."""
         
-        # Define the input manifest and check its existence.
+        print(" Reading input manifest: ")
         try:
             input_manifest = Path(manifest).resolve(strict=True)
             
             with input_manifest.open() as f:
-                flist = [line.strip() for line in f]
+                flist = [line.strip() for line in f if not line.lstrip().startswith("#")]
             
             if len(flist) == 0:
-                sys.exit(f"nput manifest, {manifest}, is empty.")
+                sys.exit(f"    Input manifest, {manifest}, is empty.")
             else:
                 flist.sort()
                 self.filelist = flist
             
             self.manifest = input_manifest
         except FileNotFoundError():
-            sys.exit(f"Input manifest, {manifest}, does not exist.")
+            sys.exit(f"    Input manifest, {manifest}, does not exist.")
+            
+        self.params['InputFiles'] = self.filelist
+        
+        print(f"    Found {len(self.filelist)} files.\n")
         
         return self.filelist
     
@@ -162,8 +185,8 @@ class MakeDFlat(object):
                         meta_data[key].append(hdr[key])    
                 
             except (OSError, FileNotFoundError) as error:
-                print("\nERROR: File maybe missing or corrupted.")
-                print(f"ERROR: {error}\n")
+                print(" WARNING: File maybe missing or corrupted.")
+                print(f" WARNING: {error}\n")
         
         input_df = pd.DataFrame(meta_data)
         
@@ -175,13 +198,13 @@ class MakeDFlat(object):
     def is_wfc3_band(self, band, mode='IR'):
         
         if band is None:
-            print(" Filter is set to None. Returning False.")
+            print(" Filter is set to None. Returning False.\n")
             return False
         else:
             u_band = band.upper()
             
         if mode is None:
-            print(" None is not a valid WFC3 detector. Returning False.")
+            print(" None is not a valid WFC3 detector. Returning False.\n")
             return False
         else:
             u_mode = mode.upper()
@@ -193,7 +216,7 @@ class MakeDFlat(object):
         
         if u_mode not in valid_modes:
             print(f" The requested detector {u_mode} is not a valid WFC3 " +
-                  " observing detector. Returing False.")
+                  " detector. Returing False.\n")
             return False
         
         if u_mode == 'IR':
@@ -218,17 +241,17 @@ class MakeDFlat(object):
         
         if band is None:
             msg = " FILTER/band is undefined. Will look in the data "
-            msg = msg + "header for FILTER value."
+            msg = msg + "header for FILTER value.\n"
             print(msg)
             if not 'FILTER' in input_df.columns:
                 sys.exit(" FILTER column is not found in the input " +
-                      " dataframe. Exiting ......")
+                      " dataframe. Exiting ......\n")
             else:
                 barr = np.unique(input_df['FILTER'])
-                print(f" Found {barr} filter/s in the input data.")
+                print(f" Found {barr} filter/s in the input data.\n")
                 if len(barr) > 1:
                     print(" Multiple filter values found in the input " +
-                          "data. Processing only {barr[0]} filter.")
+                          "data. Processing only {barr[0]} filter.\n")
             
             band = barr[0]
         
@@ -236,7 +259,7 @@ class MakeDFlat(object):
             self.band = band
         else:
             err_msg = f" Filter, {band}, is not a part of MIRI imager "
-            err_msg = err_msg + " filter suite."
+            err_msg = err_msg + " filter suite.\n"
             sys.exit(err_msg)
         
         orig_len = input_df.shape[0]
@@ -252,49 +275,49 @@ class MakeDFlat(object):
         
         if orig_len != new_len and orig_len > new_len:
             print(f"{orig_len - new_len} invlid datafiles were excluded " +
-                  "from procesing.")
+                  "from procesing.\n")
         elif new_len > orig_len:
             print(f" Original number of files: {orig_len}")
             print(f" After validate number of files: {new_len}")
             sys.exit(" Something is wrong here. Validation added " +
-                     " additional data.")
+                     " additional data.\n")
             
         self.df = tmp_df.copy()
         
         return self.df
         
     
-    def get_delta_threshold(self, band):
-        if band is None:
-            print(" Checking for valid MIRI filter.....")
-            if self.band is None:
-                sys.exit(" MIRI filter undefined.")
-            else:
-                u_band = self.band
-        else:
-            u_band = band
-            
-        if not self.is_wfc3_band(u_band):
-            print(f" {u_band} is not a valid MIRI filter/band.")
-            sys.exit(" Exiting ......")
+    @classmethod    
+    def _get_stats(cls, filename, thresholds=None):
+        stats = {'Filename': [], 'TotPix': [], 'NegCnt': [], 'Min': [], 
+                 'Max': [], 'Mean': [], 'MeanUnc': [], 'Var': [], 
+                 'Skew': [], 'Kurt': [], 'Mode': [], 'SCS_Sigma': [], 
+                 'SCS_Mean': [], 'SCS_Median': [], 'SCS_Std': [], 
+                 'UpSigma': [], 'LoSigma': [], 'HiThres': [], 
+                 'LoThres':[], 'NanCount': [], 'GoodCount':[], '%Good': []}
         
-        delta_thresholds = {'F105W': 0, 'F110W': 0, 'F125W': 0, 'F140W': 10, 
-                            'F160W': 0, 'F098M': 0, 'F127M': 0, 'F139M': 0, 
-                            'F153M': 0, 'F126N': 0, 'F128N': 0, 'F130N': 0, 
-                            'F132N': 0, 'F164N': 0, 'F167N': 0}
         
-        thres = delta_thresholds[band]
-        
-        return thres
-        
-    def get_stats(self, in_data):
-        stats = {'Min': [], 'Max': [], 'Mean': [], 'Mean Unc': [], 
-                 'Median': [], 'StdDev': [], 'Mode': [], 'Var': [], 
-                 'Skew': [], 'Kurt': []}
         
         return stats
     
     
+    def mask_outlliers(self, clean_df, thresholds=None, ncores=5):
+        
+        if thresholds is None:
+            thresholds = [2.0, 5.0, 2.0]
+            
+        if 'FILEPATH' in clean_df.columns:
+            worker_args = [(file, thresholds) for file in clean_df['FILEPATH']]
+            
+        with multiprocessing.Pool(processes=ncores) as pool:
+            masked_file = pool.map(self._get_stats, worker_args)
+            
+        masked_df = clean_df.copy()
+        masked_df['MaskedFile'] = masked_file
+        
+        return masked_df
+        
+        
     def generate_flat(self, input_df, mask=None, dthres=None, method="mean",
                       outfile=None, save=False):
         #place holder 

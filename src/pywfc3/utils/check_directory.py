@@ -6,6 +6,7 @@ Created on Fri Dec 19 10:45:46 2025
 @author: sshenoy
 """
 
+import sys
 from pathlib import Path
 
 def check_directory(input_dir, data_dir=False):
@@ -37,17 +38,20 @@ def check_directory(input_dir, data_dir=False):
     user_directory = Path(input_dir).resolve()
     
     if data_dir:
-        data_directory = user_directory / 'fits'
-        if not data_directory.is_dir():
+        if user_directory.is_dir():
             data_directory = user_directory
-        
-        if not data_directory.is_dir():
-            print(" Data directory does not exist. Returning None.")
+            fits_dir = data_directory / 'fits'
+            if fits_dir.is_dir():
+                data_directory = fits_dir
+            
+            files_list = list(data_directory.glob('*.fits'))
+            if len(files_list) == 0:
+                print(" Did not find any FITS data file in the data directory:")
+                print(f"\t{data_directory}".expandtabs(4))
+                sys.exit(" Stopping execution.")
+        else:
+            sys.exit(" Data directory does not exist. Stopping Execution.")
 
-        files_list = list(data_directory.glob('*.fits'))
-        if len(files_list) == 0:
-            print(" Did not find any fits data file in the data directory:")
-            print(f"\t{data_directory}".expandtabs(4))
         
         input_directory = data_directory
         

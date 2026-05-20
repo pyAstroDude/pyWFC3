@@ -2,6 +2,9 @@
     "InputDirectory": "./",
     "DataDirectory": "./data/fits",
     "OutputDirectory": "./proc",
-    "Manifest": "manifest.txt",
-    "RunSteps": "all"
+    "Manifest": "manifests/manifest.txt",
+    "RunSteps": "all",
+    "Filter": "F140W", 
+    "Thresholds": [2.0, 5.0, 2.0],
+    "Cores": 5
 }

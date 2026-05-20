@@ -26,7 +26,7 @@ def get_output_directory(name=None):
     """
     
     if name is None:
-        output_directory = Path.cwd() + '/proc'
+        output_directory = Path('./proc').resolve()
     else:
         output_directory = Path(name).resolve()
     
