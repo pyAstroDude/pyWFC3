@@ -34,8 +34,7 @@ def check_directory(input_dir, data_dir=False):
 
     """
     
-    user_directory = Path(input_dir)
-    user_directory = user_directory.resolve()
+    user_directory = Path(input_dir).resolve()
     
     if data_dir:
         data_directory = user_directory / 'fits'

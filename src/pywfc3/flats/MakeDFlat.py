@@ -15,6 +15,7 @@ import warnings
 import importlib.resources
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from astropy.io import fits
 
@@ -171,24 +172,128 @@ class MakeDFlat(object):
         return self.df
         
     
-    def validate_df(self, input_df):
+    def is_wfc3_band(self, band, mode='IR'):
+        
+        if band is None:
+            print(" Filter is set to None. Returning False.")
+            return False
+        else:
+            u_band = band.upper()
+            
+        if mode is None:
+            print(" None is not a valid WFC3 detector. Returning False.")
+            return False
+        else:
+            u_mode = mode.upper()
+        
+        self.band = u_band
+        self.mode = u_mode
+        
+        valid_modes = ['IR', 'UVIS']
+        
+        if u_mode not in valid_modes:
+            print(f" The requested detector {u_mode} is not a valid WFC3 " +
+                  " observing detector. Returing False.")
+            return False
+        
+        if u_mode == 'IR':
+            valid_filters = ['F105W', 'F110W', 'F125W', 'F140W', 'F160W', 
+                             'F098M', 'F127M', 'F139M', 'F153M', 
+                             'F126N', 'F128N', 'F130N', 'F132N', 'F164N', 
+                             'F167N']
+            if u_band in valid_filters:
+                yes_no = True
+            else:
+                yes_no = False
+        elif u_mode == 'UVIS':
+            valid_filters = ['Add uvis filters here.']
+            if u_band in valid_filters:
+                yes_no = True
+            else:
+                yes_no = False
+            
+        return yes_no
+    
+    def validate_df(self, input_df, band=None):
+        
+        if band is None:
+            msg = " FILTER/band is undefined. Will look in the data "
+            msg = msg + "header for FILTER value."
+            print(msg)
+            if not 'FILTER' in input_df.columns:
+                sys.exit(" FILTER column is not found in the input " +
+                      " dataframe. Exiting ......")
+            else:
+                barr = np.unique(input_df['FILTER'])
+                print(f" Found {barr} filter/s in the input data.")
+                if len(barr) > 1:
+                    print(" Multiple filter values found in the input " +
+                          "data. Processing only {barr[0]} filter.")
+            
+            band = barr[0]
+        
+        if self.is_wfc3_band(band):
+            self.band = band
+        else:
+            err_msg = f" Filter, {band}, is not a part of MIRI imager "
+            err_msg = err_msg + " filter suite."
+            sys.exit(err_msg)
+        
+        orig_len = input_df.shape[0]
+        
+        tmp_df = input_df.copy()
+        
+        tmp_df = tmp_df.drop(tmp_df[tmp_df['INSTRUME']!='WFC3'].index)
+        tmp_df = tmp_df.drop(tmp_df[tmp_df['OBSTYPE']!='IMAGING'].index)
+        tmp_df = tmp_df.drop(tmp_df[tmp_df['DETECTOR']!='IR'].index)
+        tmp_df = tmp_df.drop(tmp_df[tmp_df['FILTER']!=band].index)
+        
+        new_len = tmp_df.shape[0]
+        
+        if orig_len != new_len and orig_len > new_len:
+            print(f"{orig_len - new_len} invlid datafiles were excluded " +
+                  "from procesing.")
+        elif new_len > orig_len:
+            print(f" Original number of files: {orig_len}")
+            print(f" After validate number of files: {new_len}")
+            sys.exit(" Something is wrong here. Validation added " +
+                     " additional data.")
+            
+        self.df = tmp_df.copy()
         
         return self.df
-    
-    
-    def get_mask(self, m_file, mask_out=None, edge=None, save=False):
-        # Place holder
-        flat_mask = []
-        
-        return flat_mask
         
     
     def get_delta_threshold(self, band):
-        # Place holder
-        thres = []
+        if band is None:
+            print(" Checking for valid MIRI filter.....")
+            if self.band is None:
+                sys.exit(" MIRI filter undefined.")
+            else:
+                u_band = self.band
+        else:
+            u_band = band
+            
+        if not self.is_wfc3_band(u_band):
+            print(f" {u_band} is not a valid MIRI filter/band.")
+            sys.exit(" Exiting ......")
+        
+        delta_thresholds = {'F105W': 0, 'F110W': 0, 'F125W': 0, 'F140W': 10, 
+                            'F160W': 0, 'F098M': 0, 'F127M': 0, 'F139M': 0, 
+                            'F153M': 0, 'F126N': 0, 'F128N': 0, 'F130N': 0, 
+                            'F132N': 0, 'F164N': 0, 'F167N': 0}
+        
+        thres = delta_thresholds[band]
         
         return thres
         
+    def get_stats(self, in_data):
+        stats = {'Min': [], 'Max': [], 'Mean': [], 'Mean Unc': [], 
+                 'Median': [], 'StdDev': [], 'Mode': [], 'Var': [], 
+                 'Skew': [], 'Kurt': []}
+        
+        return stats
+    
     
     def generate_flat(self, input_df, mask=None, dthres=None, method="mean",
                       outfile=None, save=False):

@@ -53,6 +53,10 @@ def main():
                         'lists all the required input parameters to run ' +
                         'the steps from WFC3_ISR_2021-10 to generate the ' +
                         'D-flat.')
+    parser.add_argument('-f', '--filter', dest='filter', type=str,
+                        action='store', default=None,
+                        help='WFC3 IR filter/band to process. Default ' +
+                        'is F140W.')
     
     args = parser.parse_args()
     # print(f"All Arguments: {args}")
@@ -74,15 +78,17 @@ def main():
     
     files_df = mf.make_dataframe(files_list)
     
+    valid_df = mf.validate_df(files_df, band=args.filter)
+    
     ### This is for debugging. Remove once code is robust.
     print()
-    print(files_df.head().to_string(), "\n")
+    print(valid_df.head().to_string(), "\n")
     # print(f"INPATH: {mf.inpath}")
     # print(f"DATADIR: {mf.datadir}")
     # print(f"OUTPATH: {mf.outpath}")
     # print(f"MANIFEST: {mf.manifest}")
     # print(f"# of files: {len(mf.filelist)}\n")
     
-    sys.exit()
+    sys.exit(f" Successfully processed data for {mf.band}.")
     
     
