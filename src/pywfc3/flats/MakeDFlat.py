@@ -16,10 +16,11 @@ import multiprocessing
 import importlib.resources
 from pathlib import Path
 
-
 import numpy as np
 import pandas as pd
+from scipy import stats
 from astropy.io import fits
+from astropy.stats import sigma_clipped_stats
 
 from pywfc3 import utils 
 
@@ -27,23 +28,12 @@ class MakeDFlat(object):
     """Class to generate WFC3 IR D-flat"""
     
     def __init__(self):
+        
         self.params = None
-        self.out_params = None
-        self.inpath = None
-        self.datadir = None
-        self.outpath = None
-        self.manifest = None
-        self.filelist = None
         self.df = None
-        self.hdul = None
-        self.mode = None
-        self.band = None
-        self.mask_outside = []
-        self.sigma = None
-        self.edge = 8
-        self.rate_outpath = None
-    
-    
+        
+        
+        
     def get_pipeline_params(self, cl_args):
         
         params = {}
@@ -60,14 +50,14 @@ class MakeDFlat(object):
                         params.update(json.load(f))
                 except json.JSONDecodeError as e:
                     warnings.warn(" WARNING: Could not decode default\n" + 
-                                  f" parameter file {p_file}: \n{e}")
+                                  f" parameter file {p_file}: \n{ e}")
         except ModuleNotFoundError:
             warnings.warn(" WARNING: Could not find pywfc3.parameters module.\n" + 
                           " Default parameters not loaded.")
-    
+        
         # 2. Layer User-Provided JSON (Medium Priority)
-        if cl_args.config is not None:
-            usr_cfg_file = Path(cl_args.config).resolve()
+        if cl_args.ParamFile is not None:
+            usr_cfg_file = Path(cl_args.ParamFile).resolve()
             if usr_cfg_file.is_file():
                 try:
                     with open(usr_cfg_file, 'r') as f:
@@ -75,19 +65,18 @@ class MakeDFlat(object):
                 except json.JSONDecodeError as e:
                     warnings.warn(" WARNING: Could not decode user's\n" + 
                                   f" parameter file {usr_cfg_file.name}:\n{e}")
-    
+        
         # 3. Layer CLI Overrides (Highest Priority)
         # Only update keys if the user actually passed them via command line
         for key, value in vars(cl_args).items():
-            if value is not None and key != 'config':
+            if value is not None:
                 cl_overrides = {key: value}
-                
-        params.update(cl_overrides)
+                params.update(cl_overrides)
         
         self.params = params
-        self.out_params = params.copy()
     
         return params
+    
     
     
     def setup_directories(self, dir_name, is_input=False, is_data=False,
@@ -109,15 +98,15 @@ class MakeDFlat(object):
         
         # Set input (working) directory
         if is_input:
-            self.inpath = utils.check_directory(dir_name)
-            self.out_params['InputDirectory'] = str(self.inpath)
-            print(f" Found Input Directory: \n {self.inpath}\n")
+            inpath = utils.check_directory(dir_name)
+            self.params['InputDirectory'] = str(inpath)
+            print(f" Found Input Directory: \n    {inpath}\n")
         
         # Set up data directory.
         if is_data:
-            self.datadir = utils.check_directory(dir_name, data_dir=True)
-            self.out_params['DataDirectory'] = str(self.datadir)
-            print(f" Found Data Directory: \n {self.datadir}\n")
+            datadir = utils.check_directory(dir_name, data_dir=True)
+            self.params['DataDirectory'] = str(datadir)
+            print(f" Found Data Directory: \n    {datadir}\n")
         
         # Set up output directory.
         if is_output:
@@ -126,10 +115,10 @@ class MakeDFlat(object):
             else:
                 out_name = Path('./proc') / self.params['Filter']
                 
-            self.outpath = utils.get_output_directory(name=out_name)
+            outpath = utils.get_output_directory(name=out_name)
             
-            print(f" Setting Output Directory: \n {self.outpath}\n")  
-            self.out_params['OutputDirectory'] = str(self.outpath)
+            print(f" Setting Output Directory: \n    {outpath}\n") 
+            self.params['OutputDirectory'] = str(outpath)
             
         
         
@@ -148,17 +137,18 @@ class MakeDFlat(object):
                 sys.exit(f"    Input manifest, {manifest}, is empty.")
             else:
                 flist.sort()
-                self.filelist = flist
+                filelist = flist
             
-            self.manifest = input_manifest
+            self.params['Manifest'] = str(input_manifest)
         except FileNotFoundError():
             sys.exit(f"    Input manifest, {manifest}, does not exist.")
             
-        self.params['InputFiles'] = self.filelist
+        self.params['InputFiles'] = filelist
         
-        print(f"    Found {len(self.filelist)} files.\n")
+        print(f"    Found {len(filelist)} files.\n")
         
-        return self.filelist
+        return filelist
+    
     
     
     def make_dataframe(self, filelist):
@@ -194,6 +184,7 @@ class MakeDFlat(object):
         
         return self.df
         
+    
     
     def is_wfc3_band(self, band, mode='IR'):
         
@@ -236,6 +227,8 @@ class MakeDFlat(object):
                 yes_no = False
             
         return yes_no
+    
+    
     
     def validate_df(self, input_df, band=None):
         
@@ -287,41 +280,174 @@ class MakeDFlat(object):
         return self.df
         
     
-    @classmethod    
-    def _get_stats(cls, filename, thresholds=None):
-        stats = {'Filename': [], 'TotPix': [], 'NegCnt': [], 'Min': [], 
-                 'Max': [], 'Mean': [], 'MeanUnc': [], 'Var': [], 
-                 'Skew': [], 'Kurt': [], 'Mode': [], 'SCS_Sigma': [], 
-                 'SCS_Mean': [], 'SCS_Median': [], 'SCS_Std': [], 
-                 'UpSigma': [], 'LoSigma': [], 'HiThres': [], 
-                 'LoThres':[], 'NanCount': [], 'GoodCount':[], '%Good': []}
+    
+    @staticmethod
+    def _stats_meta():
+        stats_hdr = {'FILENAME': None, 'TotPix': None, 'NegCnt': None, 
+                     'Min': None, 'Max': None, 'Mean': None, 'MeanUnc': None, 
+                     'Var': None, 'Skew': None, 'Kurt': None, 'Mode': None, 
+                     'OutlierSigma': None, 'SCS_Mean': None, 
+                     'SCS_Median': None, 'SCS_Std': None, 'BiasSigma': None, 
+                     'SourceSigma': None, 'BiasThres': None, 
+                     'SourceThres':None, 'NanCount': None, 'GoodCount':None, 
+                     '%Good': None}
         
+        return stats_hdr
+    
         
+    
+    def mask_single_file(self, args):
         
-        return stats
+        filename, ext_id, thresholds, save = args
+        
+        file_stats = self._stats_meta()
+        
+        file_stats['FILENAME'] = Path(filename).name
+        
+        if (thresholds is None) or (len(thresholds) < 3):
+            outlier_sigma, bias_sigam, source_sigma = self.params['Thresholds']
+        else:
+            outlier_sigma, bias_sigam, source_sigma = thresholds
+    
+        file_stats['OutlierSigma'] = outlier_sigma
+        file_stats['BiasSigma'] = bias_sigam
+        file_stats['SourceSigma'] = source_sigma 
+    
+        hdul = fits.open(filename)
+        
+        data_stats = stats.describe(hdul['sci'].data, axis=None)
+        sem = stats.sem(hdul['sci'].data, axis=None)
+        mode = stats.mode(hdul['sci'].data, axis=None).mode
+        men, med, std = sigma_clipped_stats(hdul['sci'].data, sigma=outlier_sigma)
+        
+        bias_thre = med - bias_sigam * std
+        source_thre = med + source_sigma * std
+        
+        bias_mask = (hdul['sci'].data < bias_thre)
+        source_mask = (hdul['sci'].data > source_thre)
+        
+        hdul['sci'].data[bias_mask] = np.nan
+        hdul['sci']. data[source_mask] = np.nan
+        
+        hdul['err'].data[bias_mask] = np.nan
+        hdul['err']. data[source_mask] = np.nan
+        
+        hdul['dq'].data[:, :] = 0
+        
+        hdul['dq'].data[bias_mask] = 1
+        hdul['dq']. data[source_mask] = 1
+        
+        nan_cnt = np.count_nonzero(np.isnan(hdul['sci'].data))
+        good_cnt = np.count_nonzero(~np.isnan(hdul['sci'].data))
+    
+        per_good = 100 * good_cnt / data_stats.nobs
+        
+        file_stats['TotPix'] = data_stats.nobs
+        file_stats['NegCnt'] = (hdul['sci'].data < 0).sum()
+        file_stats['Min'] = data_stats.minmax[0]
+        file_stats['Max'] = data_stats.minmax[1]
+        file_stats['Mean'] = data_stats.mean
+        file_stats['Var'] = data_stats.variance
+        file_stats['Skew'] = data_stats.skewness
+        file_stats['Kurt'] = data_stats.kurtosis
+        
+        file_stats['MeanUnc'] = sem
+        
+        file_stats['Mode'] = mode
+    
+        file_stats['SCS_Mean'] = men
+        file_stats['SCS_Median'] = med
+        file_stats['SCS_Std'] = std
+        
+        file_stats['BiasThres'] = bias_thre
+        file_stats['SourceThres'] = source_thre
+        
+        file_stats['NanCount'] = nan_cnt
+        file_stats['GoodCount'] = good_cnt
+        file_stats['%Good'] = per_good
+        
+        masked_path = Path(self.params['OutputDirectory'])
+        masked_filename = Path(filename).name.replace('flt', 'msk')
+        masked_fullpath = masked_path / masked_filename
+        
+        file_stats['MaskedFile'] = masked_fullpath
+        
+        if save:
+            hdul.writeto(masked_fullpath, overwrite=True)
+        
+        hdul.close()
+        
+        return file_stats
     
     
-    def mask_outlliers(self, clean_df, thresholds=None, ncores=5):
+    
+    def mask_outliers(self, clean_df, thresholds=None, ncores=1):
         
-        if thresholds is None:
-            thresholds = [2.0, 5.0, 2.0]
-            
+        if (thresholds is None) or (len(thresholds)<3):
+            thresholds = self.params['Thresholds']
+        
         if 'FILEPATH' in clean_df.columns:
-            worker_args = [(file, thresholds) for file in clean_df['FILEPATH']]
+            ext_id = 'sci'
+            save = self.params['Save']
+            worker_args = [(file, ext_id, thresholds, save) \
+                           for file in clean_df['FILEPATH']]
             
         with multiprocessing.Pool(processes=ncores) as pool:
-            masked_file = pool.map(self._get_stats, worker_args)
+            masked_data = pool.map(self.mask_single_file, worker_args)
+        
+        masked_df = pd.DataFrame(list(masked_data))
+        
+        merged_df = pd.merge(clean_df, masked_df, on='FILENAME', how='left')
             
-        masked_df = clean_df.copy()
-        masked_df['MaskedFile'] = masked_file
+        self.df = merged_df
         
-        return masked_df
+        return self.df
         
+    
+    
+    @classmethod
+    def _run_single_calw3(cls, args): 
+        unflattened_flt = []
         
+        # FLATCORR = 'OMIT"
+        
+        return unflattened_flt
+    
+    
+    
+    def run_calw3_pipe(self, input_df):
+        
+        # multiprocess with N cores.
+        
+        return # unflattened_df
+    
+    
+    
+    def update_mask(self, unlaflattened_df):
+        
+        # Read DQ from unflattend, add DQ from MSK 
+        
+        return # unflatted_mask_df
+    
+    
+    
     def generate_flat(self, input_df, mask=None, dthres=None, method="mean",
                       outfile=None, save=False):
-        #place holder 
+        
+        #  ensure the combined mask is used. for stacking.
+        
+        
         outflat = []
         
         
         return outflat
+    
+    
+    
+    def update_dflat(self, input_df):
+        
+        # divide the outflat with pflat.
+        
+        # add/update the old dflat with new blobs.
+        
+        return

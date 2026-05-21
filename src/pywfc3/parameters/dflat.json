@@ -1,10 +1,11 @@
 {
-    "InputDirectory": "./",
+    "Cores": 1, 
     "DataDirectory": "./data/fits",
-    "OutputDirectory": "./proc",
+    "Filter": "F140W",
+    "InputDirectory": "./",
     "Manifest": "manifests/manifest.txt",
-    "RunSteps": "all",
-    "Filter": "F140W", 
-    "Thresholds": [2.0, 5.0, 2.0],
-    "Cores": 5
+    "OutputDirectory": "./proc",
+    "ParamFile": "params/params.json", 
+    "Save": false,
+    "Thresholds": [2.0, 5.0, 2.0]   
 }
