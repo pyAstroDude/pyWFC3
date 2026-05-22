@@ -10,14 +10,19 @@ This is the class that can be used to run the procedures list in WFC3 ISR
 """
 
 import sys
-import json
+import yaml
+import logging
 import warnings
+import subprocess
 import multiprocessing
 import importlib.resources
+
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
+
 from scipy import stats
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
@@ -27,60 +32,136 @@ from pywfc3 import utils
 class MakeDFlat(object):
     """Class to generate WFC3 IR D-flat"""
     
-    def __init__(self):
+    def __init__(self, cl_args=None):
         
-        self.params = None
+        if cl_args is not None:
+            self.params = self.get_pipeline_params(cl_args)
+            
         self.df = None
         
+        self._setup_main_logger()
+        self._init_step_loggers()
         
         
+    
     def get_pipeline_params(self, cl_args):
         
         params = {}
-        print("\n Generating Pipeline Parameters.\n")
-        
         
         # 1. Start with Default JSON
         try:
             default_param_dir = importlib.resources.files('pywfc3.parameters')
-            default_param_file = default_param_dir.joinpath('dflat.json')
+            default_param_file = default_param_dir.joinpath('dflat.yaml')
             with importlib.resources.as_file(default_param_file) as p_file:
                 try:
-                    with open(p_file, 'r') as f:
-                        params.update(json.load(f))
-                except json.JSONDecodeError as e:
-                    warnings.warn(" WARNING: Could not decode default\n" + 
-                                  f" parameter file {p_file}: \n{ e}")
+                    with open(p_file, 'r', encoding='utf-8') as f:
+                        params.update(yaml.safe_load(f))
+                except yaml.YAMLError as exc:
+                    warn_msg = "ERROR reading default YMAL file.\n{exc}"
+                    self.logger.info(warn_msg)
+                    warnings.warn(warn_msg)
         except ModuleNotFoundError:
-            warnings.warn(" WARNING: Could not find pywfc3.parameters module.\n" + 
-                          " Default parameters not loaded.")
+            warn_msg = "WARNING: Could not find pywfc3.parameters module" + \
+                "Default parameters not loaded."
+            self.logger.info(warn_msg)
+            warnings.warn(warn_msg)
+            
+        
         
         # 2. Layer User-Provided JSON (Medium Priority)
-        if cl_args.ParamFile is not None:
-            usr_cfg_file = Path(cl_args.ParamFile).resolve()
+        if cl_args.yamlfile is not None:
+            usr_cfg_file = Path(cl_args.yamlfile).resolve()
             if usr_cfg_file.is_file():
                 try:
-                    with open(usr_cfg_file, 'r') as f:
-                        params.update(json.load(f))
-                except json.JSONDecodeError as e:
-                    warnings.warn(" WARNING: Could not decode user's\n" + 
-                                  f" parameter file {usr_cfg_file.name}:\n{e}")
+                    with open(usr_cfg_file, 'r', encoding='utf-8') as f:
+                        # params.update(json.load(f))
+                        params.update(yaml.safe_load(f))
+                # except json.JSONDecodeError as e:
+                except yaml.YAMLError as exc:
+                    warn_msg = "ERROR reading user parameter file "
+                    f"{usr_cfg_file.name}: \n{exc}"
+                    self.logger.info(warn_msg)
+                    warnings.warn(warn_msg)
+                    
         
         # 3. Layer CLI Overrides (Highest Priority)
         # Only update keys if the user actually passed them via command line
         for key, value in vars(cl_args).items():
             if value is not None:
                 cl_overrides = {key: value}
-                params.update(cl_overrides)
+                params['files'].update(cl_overrides)
         
-        self.params = params
-    
         return params
     
     
+    def _setup_main_logger(self):
+        """Sets up the unique session master log and console output."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if not hasattr(self, "params"):
+            self.params = {}
+            log_directory = Path('./logs')
+            log_directory.mkdir(parents=True, exist_ok=True)
+            self.params['paths']['logdir'] = log_directory
+            
+        #Check if log directory exists, if not create it.
+        log_directory = Path(self.params['paths']['logdir']).resolve()
+        if not log_directory.is_dir():
+            log_directory.mkdir(parents=True, exist_ok=True)
+        
+        self.main_log_path =  log_directory / f"dflat_{timestamp}.log"
+        
+        self.logger = logging.getLogger("DFlat_Pipe")
+        self.logger.setLevel(logging.INFO)
+        
+        # Clear old handlers (crucial for Jupyter)
+        if self.logger.handlers:
+            self.logger.handlers.clear()
+        
+        fmt = logging.Formatter('%(name)s %(asctime)s: %(message)s', 
+                                datefmt='%H:%M:%S')
+        
+        # Handler 1: Master File
+        fh = logging.FileHandler(self.main_log_path)
+        self.logger.addHandler(fh)
+        
+        # Handler 2: Console (Screen)
+        ch = logging.StreamHandler()
+        self.logger.addHandler(ch)
+        
+        # Print start pipeline message.
+        self.logger.info("\n \t Starting DFlat pipeline.\n")
+        
+        # Now set the correct format.
+        fh.setFormatter(fmt)
+        ch.setFormatter(fmt)
+            
+        
+    def _init_step_loggers(self):
+        """Initializes empty loggers for CRDS and CALWF3."""
+        self.logger_crds = logging.getLogger("DFlat_CRDS")
+        self.logger_crds.setLevel(logging.DEBUG)
+        
+        self.logger_cal = logging.getLogger("DFlat_CALWF3")
+        self.logger_cal.setLevel(logging.DEBUG)
+        
+        
+        
+    def _update_step_handler(self, logger_obj, new_log_path):
+        """Swaps the file target for CRDS or CALWF3 logs."""
+        for handler in logger_obj.handlers[:]:
+            handler.close()
+            logger_obj.removeHandler(handler)
+        
+        fmt = logging.Formatter('[%(name)s] [%(asctime)s] %(message)s', 
+                                datefmt='%H:%M:%S')
+        fh = logging.FileHandler(new_log_path)
+        fh.setFormatter(fmt)
+        logger_obj.addHandler(fh)
     
-    def setup_directories(self, dir_name, is_input=False, is_data=False,
-                          is_output=False):
+    
+    
+    def setup_directories(self):
         """
         Check if the input and data directories exist and create the output
         directory if it does not exist.
@@ -96,37 +177,41 @@ class MakeDFlat(object):
 
         """
         
-        # Set input (working) directory
-        if is_input:
-            inpath = utils.check_directory(dir_name)
-            self.params['InputDirectory'] = str(inpath)
-            print(f" Found Input Directory: \n    {inpath}\n")
-        
-        # Set up data directory.
-        if is_data:
-            datadir = utils.check_directory(dir_name, data_dir=True)
-            self.params['DataDirectory'] = str(datadir)
-            print(f" Found Data Directory: \n    {datadir}\n")
-        
-        # Set up output directory.
-        if is_output:
-            if dir_name is not None:
-                out_name = Path(dir_name) / self.params['Filter']
-            else:
-                out_name = Path('./proc') / self.params['Filter']
+        if hasattr(self, 'params'):
+            # Check for input directory
+            inpath = utils.check_directory(self.params['paths']['input'])
+            self.params['paths']['input'] = str(inpath)
+            self.logger.info(f"Found Input Directory: \n    {inpath}\n")
+            
+            # Check for data directory
+            datadir = utils.check_directory(self.params['paths']['data'], 
+                                            data_dir=True)
+            self.params['paths']['data'] = str(datadir)
+            self.logger.info(f"Found Data Directory: \n    {datadir}\n")
+            
+            # Set output directory
+            if self.params['processing']['save']:
+                # Set output directory
+                outpath = utils.get_output_directory(name=self.
+                                                     params['paths']['output'])
+                self.logger.info("Setting Output Directory: "
+                                 f"\n    {outpath}\n") 
+                self.params['paths']['output'] = str(outpath)
                 
-            outpath = utils.get_output_directory(name=out_name)
+                # Set CSV directory
+                csvdir = Path(self.params['paths']['output']) / 'csv_files'
+                csvpath = utils.get_output_directory(name=csvdir)
+                self.logger.info("Setting CSV Directory: "
+                                 f"\n    {csvpath}\n")
+                self.params['paths']['csvdir'] = str(csvpath)
             
-            print(f" Setting Output Directory: \n    {outpath}\n") 
-            self.params['OutputDirectory'] = str(outpath)
             
-        
-        
+            
     def read_manifest(self, manifest):
         """ Read the input manifest and generate a list of files
         to process."""
         
-        print(" Reading input manifest: ")
+        self.logger.info("Reading input manifest: ")
         try:
             input_manifest = Path(manifest).resolve(strict=True)
             
@@ -139,13 +224,13 @@ class MakeDFlat(object):
                 flist.sort()
                 filelist = flist
             
-            self.params['Manifest'] = str(input_manifest)
+            self.params['files']['manifest'] = str(input_manifest)
         except FileNotFoundError():
             sys.exit(f"    Input manifest, {manifest}, does not exist.")
             
-        self.params['InputFiles'] = filelist
+        self.params['files']['input'] = filelist
         
-        print(f"    Found {len(filelist)} files.\n")
+        self.logger.info(f"    Found {len(filelist)} files.\n")
         
         return filelist
     
@@ -175,8 +260,8 @@ class MakeDFlat(object):
                         meta_data[key].append(hdr[key])    
                 
             except (OSError, FileNotFoundError) as error:
-                print(" WARNING: File maybe missing or corrupted.")
-                print(f" WARNING: {error}\n")
+                self.logger.info("WARNING: File maybe missing or corrupted.")
+                self.logger.info(f"WARNING: {error}\n")
         
         input_df = pd.DataFrame(meta_data)
         
@@ -189,13 +274,13 @@ class MakeDFlat(object):
     def is_wfc3_band(self, band, mode='IR'):
         
         if band is None:
-            print(" Filter is set to None. Returning False.\n")
+            self.logger.info("Filter is set to None. Returning False.\n")
             return False
         else:
             u_band = band.upper()
             
         if mode is None:
-            print(" None is not a valid WFC3 detector. Returning False.\n")
+            self.logger.info("None is not a valid WFC3 detector. Returning False.\n")
             return False
         else:
             u_mode = mode.upper()
@@ -206,8 +291,8 @@ class MakeDFlat(object):
         valid_modes = ['IR', 'UVIS']
         
         if u_mode not in valid_modes:
-            print(f" The requested detector {u_mode} is not a valid WFC3 " +
-                  " detector. Returing False.\n")
+            self.logger.info(f"The requested detector {u_mode} is not a "
+                             "valid WFC3 detector. Returing False.\n")
             return False
         
         if u_mode == 'IR':
@@ -233,26 +318,27 @@ class MakeDFlat(object):
     def validate_df(self, input_df, band=None):
         
         if band is None:
-            msg = " FILTER/band is undefined. Will look in the data "
+            msg = "FILTER/band is undefined. Will look in the data "
             msg = msg + "header for FILTER value.\n"
-            print(msg)
+            self.logger.info(msg)
             if not 'FILTER' in input_df.columns:
-                sys.exit(" FILTER column is not found in the input " +
+                sys.exit("FILTER column is not found in the input " +
                       " dataframe. Exiting ......\n")
             else:
                 barr = np.unique(input_df['FILTER'])
-                print(f" Found {barr} filter/s in the input data.\n")
+                self.logger.info(f"Found {barr} filter/s in the input data.\n")
                 if len(barr) > 1:
-                    print(" Multiple filter values found in the input " +
-                          "data. Processing only {barr[0]} filter.\n")
+                    self.logger.info("Multiple filter values found in the "
+                                     f"input data. Processing only {barr[0]} "
+                                     "filter.\n")
             
             band = barr[0]
         
         if self.is_wfc3_band(band):
             self.band = band
         else:
-            err_msg = f" Filter, {band}, is not a part of MIRI imager "
-            err_msg = err_msg + " filter suite.\n"
+            err_msg = f"Filter, {band}, is not a part of MIRI imager " + \
+                        "filter suite.\n"
             sys.exit(err_msg)
         
         orig_len = input_df.shape[0]
@@ -267,13 +353,13 @@ class MakeDFlat(object):
         new_len = tmp_df.shape[0]
         
         if orig_len != new_len and orig_len > new_len:
-            print(f"{orig_len - new_len} invlid datafiles were excluded " +
-                  "from procesing.\n")
+            self.logger.info(f"{orig_len - new_len} invlid datafiles were "
+                             "excluded from procesing.\n")
         elif new_len > orig_len:
-            print(f" Original number of files: {orig_len}")
-            print(f" After validate number of files: {new_len}")
-            sys.exit(" Something is wrong here. Validation added " +
-                     " additional data.\n")
+            self.logger.info(f"Original number of files: {orig_len}")
+            self.logger.info(f"After validate number of files: {new_len}")
+            sys.exit("Something is wrong here. Validation added " +
+                     "additional data.\n")
             
         self.df = tmp_df.copy()
         
@@ -298,14 +384,16 @@ class MakeDFlat(object):
     
     def mask_single_file(self, args):
         
-        filename, ext_id, thresholds, save = args
+        filename, ext_id, thresholds = args
         
         file_stats = self._stats_meta()
         
         file_stats['FILENAME'] = Path(filename).name
         
         if (thresholds is None) or (len(thresholds) < 3):
-            outlier_sigma, bias_sigam, source_sigma = self.params['Thresholds']
+            outlier_sigma, \
+            bias_sigam, \
+            source_sigma = self.params['processing']['thresholds']
         else:
             outlier_sigma, bias_sigam, source_sigma = thresholds
     
@@ -366,13 +454,13 @@ class MakeDFlat(object):
         file_stats['GoodCount'] = good_cnt
         file_stats['%Good'] = per_good
         
-        masked_path = Path(self.params['OutputDirectory'])
+        masked_path = Path(self.params['paths']['output'])
         masked_filename = Path(filename).name.replace('flt', 'msk')
         masked_fullpath = masked_path / masked_filename
         
         file_stats['MaskedFile'] = masked_fullpath
         
-        if save:
+        if self.params['processing']['save']:
             hdul.writeto(masked_fullpath, overwrite=True)
         
         hdul.close()
@@ -384,12 +472,11 @@ class MakeDFlat(object):
     def mask_outliers(self, clean_df, thresholds=None, ncores=1):
         
         if (thresholds is None) or (len(thresholds)<3):
-            thresholds = self.params['Thresholds']
+            thresholds = self.params['processing']['thresholds']
         
         if 'FILEPATH' in clean_df.columns:
             ext_id = 'sci'
-            save = self.params['Save']
-            worker_args = [(file, ext_id, thresholds, save) \
+            worker_args = [(file, ext_id, thresholds) \
                            for file in clean_df['FILEPATH']]
             
         with multiprocessing.Pool(processes=ncores) as pool:
@@ -398,6 +485,11 @@ class MakeDFlat(object):
         masked_df = pd.DataFrame(list(masked_data))
         
         merged_df = pd.merge(clean_df, masked_df, on='FILENAME', how='left')
+        
+        if self.params['processing']['save']:
+            csv_path = Path(self.params['paths']['csvdir']).resolve()
+            csv_name = self.params['instrument']['filter'] + "_mask_stat.csv"
+            merged_df.to_csv(csv_path / csv_name, index=False)
             
         self.df = merged_df
         

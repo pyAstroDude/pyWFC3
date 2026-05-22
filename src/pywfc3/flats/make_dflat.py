@@ -24,52 +24,47 @@ def main():
     parser = argparse.ArgumentParser(description='Genarate WFC3 IR D-Flat ' +
                                      'using the input manifest and a JSON.' +
                                      'parameter file.')
-    parser.add_argument('Manifest', metavar='Manifest', type=str, nargs='?',
+    parser.add_argument('manifest', metavar='Manifest', type=str, nargs='?',
                         help='Name of the input manifest listing ' +
                         'the files to process.')
-    parser.add_argument('-p', '--param', dest='ParamFile', type=str,
+    parser.add_argument('-p', '--param', dest='yamlfile', type=str,
                         action='store', default=None,
-                        help='Name of the configuration JSON file which ' + 
+                        help='Name of the configuration YAML file which ' + 
                         'lists all the required input parameters to run ' +
                         'the steps from WFC3_ISR_2021-10 to generate the ' +
                         'D-flat.')
     
     args = parser.parse_args()
     
-    if not args.Manifest and not args.ParamFile:
+    if not args.manifest and not args.yamlfile:
         parser.error(" The following arguments are required: \n"
                      "\t Manifest or -p/--param")
     
-    mdf = MakeDFlat.MakeDFlat()
+    mdf = MakeDFlat.MakeDFlat(args)
     
     # Get pipeline parameters from (priorities) CLI, user param file and 
     # default param file.
-    params = mdf.get_pipeline_params(args)
-    
-    ### This is for debugging. Remove once code is robust.
-    pprint(params)
-    print()
+    # params = mdf.get_pipeline_params(args)
+    params = mdf.params
         
     # # Set up directories path.
-    mdf.setup_directories(params['InputDirectory'], is_input=True)
-    mdf.setup_directories(params['DataDirectory'], is_data=True)
-    
-    if params['Save']:
-        mdf.setup_directories(params['OutputDirectory'], is_output=True)
+    mdf.setup_directories()
     
     # Read the manifest
-    files_list = mdf.read_manifest(params['Manifest'])
+    files_list = mdf.read_manifest(params['files']['manifest'])
     
     # Make panda dataframe file IDs and FITS header info.
     files_df = mdf.make_dataframe(files_list)
     
-    # Validate the pandas dataframe.
-    valid_df = mdf.validate_df(files_df, band=params['Filter'])
+    # # Validate the pandas dataframe.
+    valid_df = mdf.validate_df(files_df, band=params['instrument']['filter'])
     
-    # For each input file mask outliers, sources and update DQ extension.
-    masked_df = mdf.mask_outliers(valid_df, thresholds=params['Thresholds'],
-                                   ncores=params['Cores'])
-    
-    sys.exit(f" Successfully processed data for {mdf.band}.")
+    # # For each input file mask outliers, sources and update DQ extension.
+    masked_df = mdf.mask_outliers(valid_df, 
+                                  thresholds=params['processing']['thresholds'], 
+                                  ncores=params['processing']['cores'])
+    pprint(params)
+    # print()
+    # sys.exit(f" Successfully processed data for {mdf.band}.")
     
     
