@@ -497,6 +497,34 @@ class MakeDFlat(object):
         
     
     
+    def update_dummy_in_raw(self, raw_file):
+        
+        wfc3_dum_files = {'F098M': {'pflat': '4ac1921ji_1s_pfl.fits', 
+                                    'dflat':'4ac1829li_1s_dfl.fits'}, 
+                          'F105W': {'pflat': '4ac19225i_1s_pfl.fits', 
+                                    'dflat':'4ac1816oi_1s_dfl.fits'}, 
+                          'F110W': {'pflat': '4ac1921ri_1s_pfl.fits', 
+                                    'dflat':'4ac18192i_1s_dfl.fits'}, 
+                          'F125W': {'pflat': '4ac1921ii_1s_pfl.fits', 
+                                    'dflat':'4ac1825si_1s_dfl.fits'}, 
+                          'F140W': {'pflat': '4ac19224i_1s_pfl.fits', 
+                                    'dflat':'4ac18187i_1s_dfl.fits'}, 
+                          'F160W': {'pflat': '4ac1921li_1s_pfl.fits', 
+                                    'dflat':'4ac18231i_1s_dfl.fits'}
+                          }
+        
+        band = fits.getval(raw_file, 'FILTER', ext=0) 
+        
+        pflat_value = "nflt$"+wfc3_dum_files[band]['pflat']
+        dflat_value = "nflt$"+wfc3_dum_files[band]['dflat']
+            
+        fits.setval(raw_file, 'PFLTFILE', value=pflat_value, ext=0)
+        fits.setval(raw_file, 'DFLTFILE', value=dflat_value, ext=0)
+        
+        return raw_file
+    
+    
+    
     @classmethod
     def _run_single_calw3(cls, args): 
         unflattened_flt = []
