@@ -5,6 +5,8 @@ paths:
   output: "./proc"
   logdir: "./logs"
   csvdir: "./proc/csv_files"
+  iref: "/grp/hst/cdbs/iref/"
+  nref: "./data/dummy_flats"
 
 files:
   manifest: "manifests/manifest.txt"

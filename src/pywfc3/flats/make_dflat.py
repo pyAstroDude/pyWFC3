@@ -45,25 +45,34 @@ def main():
     # Get pipeline parameters from (priorities) CLI, user param file and 
     # default param file.
     # params = mdf.get_pipeline_params(args)
-    params = mdf.params
+    # params = mdf.params
         
     # # Set up directories path.
     mdf.setup_directories()
     
     # Read the manifest
-    files_list = mdf.read_manifest(params['files']['manifest'])
+    files_list = mdf.read_manifest(mdf.params['files']['manifest'])
     
     # Make panda dataframe file IDs and FITS header info.
     files_df = mdf.make_dataframe(files_list)
     
     # # Validate the pandas dataframe.
-    valid_df = mdf.validate_df(files_df, band=params['instrument']['filter'])
+    valid_df = mdf.validate_df(files_df, 
+                               band=mdf.params['instrument']['filter'])
     
     # # For each input file mask outliers, sources and update DQ extension.
     masked_df = mdf.mask_outliers(valid_df, 
-                                  thresholds=params['processing']['thresholds'], 
-                                  ncores=params['processing']['cores'])
-    pprint(params)
+                                  thresholds=mdf.params['processing']['thresholds'], 
+                                  ncores=mdf.params['processing']['cores'])
+    
+    raw_df = mdf.get_raw_data(masked_df)
+    
+    unflt_df = mdf.run_calw3_pipe(raw_df, 
+                                  outdir=mdf.params['paths']['output'],
+                                  ncores=mdf.params['processing']['cores'])
+    
+    print(unflt_df.to_string())
+    # pprint(params)
     # print()
     # sys.exit(f" Successfully processed data for {mdf.band}.")
     

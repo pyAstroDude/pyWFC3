@@ -35,4 +35,4 @@ def get_output_directory(name=None):
         print(" Created output directory: ")
         print(f"    {output_directory}")
     
-    return output_directory
+    return str(output_directory)

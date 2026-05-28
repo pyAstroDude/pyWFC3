@@ -9,13 +9,16 @@ This is the class that can be used to run the procedures list in WFC3 ISR
 2021-10 to generate a WFC3 IR D-Flat.
 """
 
+import os
 import sys
 import yaml
+import shutil
 import logging
 import warnings
+import contextlib
 import subprocess
 import multiprocessing
-import importlib.resources
+from importlib import resources
 
 from pathlib import Path
 from datetime import datetime
@@ -26,6 +29,10 @@ import pandas as pd
 from scipy import stats
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
+
+import crds
+from wfc3tools import calwf3
+from astroquery.mast import Observations
 
 from pywfc3 import utils 
 
@@ -42,6 +49,11 @@ class MakeDFlat(object):
         self._setup_main_logger()
         self._init_step_loggers()
         
+        # Set class-level attributes for multiprocessing safety
+        self.__class__.params = self.params
+        self.__class__.logger = self.logger
+        self.__class__.logger_cal = self.logger_cal
+        
         
     
     def get_pipeline_params(self, cl_args):
@@ -50,9 +62,9 @@ class MakeDFlat(object):
         
         # 1. Start with Default JSON
         try:
-            default_param_dir = importlib.resources.files('pywfc3.parameters')
+            default_param_dir = resources.files('pywfc3.parameters')
             default_param_file = default_param_dir.joinpath('dflat.yaml')
-            with importlib.resources.as_file(default_param_file) as p_file:
+            with resources.as_file(default_param_file) as p_file:
                 try:
                     with open(p_file, 'r', encoding='utf-8') as f:
                         params.update(yaml.safe_load(f))
@@ -147,7 +159,8 @@ class MakeDFlat(object):
         
         
         
-    def _update_step_handler(self, logger_obj, new_log_path):
+    @staticmethod
+    def _update_step_handler(logger_obj, new_log_path):
         """Swaps the file target for CRDS or CALWF3 logs."""
         for handler in logger_obj.handlers[:]:
             handler.close()
@@ -158,6 +171,13 @@ class MakeDFlat(object):
         fh = logging.FileHandler(new_log_path)
         fh.setFormatter(fmt)
         logger_obj.addHandler(fh)
+        
+    @classmethod
+    def _init_worker(cls, params):
+        """Initializes class attributes in the pool worker processes."""
+        cls.params = params
+        cls.logger = logging.getLogger("DFlat_Pipe")
+        cls.logger_cal = logging.getLogger("DFlat_CALWF3")
     
     
     
@@ -196,14 +216,14 @@ class MakeDFlat(object):
                                                      params['paths']['output'])
                 self.logger.info("Setting Output Directory: "
                                  f"\n    {outpath}\n") 
-                self.params['paths']['output'] = str(outpath)
+                self.params['paths']['output'] = outpath
                 
                 # Set CSV directory
                 csvdir = Path(self.params['paths']['output']) / 'csv_files'
                 csvpath = utils.get_output_directory(name=csvdir)
                 self.logger.info("Setting CSV Directory: "
                                  f"\n    {csvpath}\n")
-                self.params['paths']['csvdir'] = str(csvpath)
+                self.params['paths']['csvdir'] = csvpath
             
             
             
@@ -458,7 +478,7 @@ class MakeDFlat(object):
         masked_filename = Path(filename).name.replace('flt', 'msk')
         masked_fullpath = masked_path / masked_filename
         
-        file_stats['MaskedFile'] = masked_fullpath
+        file_stats['MaskedFile'] = str(masked_fullpath)
         
         if self.params['processing']['save']:
             hdul.writeto(masked_fullpath, overwrite=True)
@@ -497,7 +517,63 @@ class MakeDFlat(object):
         
     
     
-    def update_dummy_in_raw(self, raw_file):
+    def get_raw_data(self, masked_df, max_retries=3):
+        
+        raw_df = masked_df.copy()
+        
+        # 1. Generate RawFile strings (Assumes MaskedFile is already str)
+        raw_df['RawFile'] = raw_df['MaskedFile'].str.replace('msk', 
+                                                             'raw', 
+                                                             case=False)
+        
+        # 2. Get unique files to avoid redundant network/disk checks
+        unique_raw_files = raw_df['RawFile'].unique()
+        
+        # 3. Retry loop
+        for attempt in range(1, max_retries + 1):
+            # Identify what is currently missing on disk
+            missing_files = [f for f in unique_raw_files \
+                             if not Path(f).exists()]
+            
+            if not missing_files:
+                self.logger.info("Verification Complete: "
+                                      "All raw files are downloaded.")
+                break
+            
+            self.logger.info(f"Attempt {attempt}/{max_retries}: "
+                                  f"{len(missing_files)} files missing. "
+                                  "Starting download...")
+            
+            for raw_path_str in missing_files:
+                raw_path_obj = Path(raw_path_str)
+                mast_url = f"mast:hst/product/{raw_path_obj.name}"
+                
+                try:
+                    Observations.download_file(
+                        mast_url, 
+                        local_path=str(raw_path_obj), 
+                        cache=True
+                    )
+                except Exception as e:
+                    self.logger.error("Download failed for "
+                                           f"{raw_path_obj.name}: {e}")
+        
+        # 4. Final check after all retries
+        final_missing = [f for f in unique_raw_files if not Path(f).exists()]
+        if final_missing:
+            self.logger.warning("Final Count Mismatch: "
+                                     f"{len(final_missing)} files still "
+                                     f"missing after {max_retries} attempts.")
+        
+        self.df = raw_df
+        
+        return self.df
+                
+        
+        
+    @classmethod
+    def update_dummy_in_raw(cls, raw_file):
+        """Updates PFLTFILE and DFLTFILE headers in raw files with dummy files."""
         
         wfc3_dum_files = {'F098M': {'pflat': '4ac1921ji_1s_pfl.fits', 
                                     'dflat':'4ac1829li_1s_dfl.fits'}, 
@@ -515,31 +591,152 @@ class MakeDFlat(object):
         
         band = fits.getval(raw_file, 'FILTER', ext=0) 
         
-        pflat_value = "nflt$"+wfc3_dum_files[band]['pflat']
-        dflat_value = "nflt$"+wfc3_dum_files[band]['dflat']
+        pflat_name = wfc3_dum_files[band]['pflat']
+        dflat_name = wfc3_dum_files[band]['dflat']
+        
+        pflat_value = "nref$"+pflat_name
+        dflat_value = "nref$"+dflat_name
             
         fits.setval(raw_file, 'PFLTFILE', value=pflat_value, ext=0)
         fits.setval(raw_file, 'DFLTFILE', value=dflat_value, ext=0)
         
-        return raw_file
+        return raw_file, pflat_name, dflat_name
     
     
     
     @classmethod
     def _run_single_calw3(cls, args): 
-        unflattened_flt = []
         
-        # FLATCORR = 'OMIT"
+        unflattened_flt = {'RawFile': None, 'FltFile': None, 'ImaFile': None}
         
+        raw_file, pflat, dflat = cls.update_dummy_in_raw(args)
+        
+        nref_dir = os.environ.get('nref')
+        pflat_path = Path(nref_dir) / pflat
+        dflat_path = Path(nref_dir) / dflat
+        
+        ref_path = resources.files('pywfc3.data')
+        
+        if not pflat_path.is_file():
+            pref_file = ref_path.joinpath(pflat)
+            if pref_file.is_file():
+                shutil.copy2(pref_file, pflat_path)
+            else:
+                cls.logger.info(f"Dummy reference flat {pflat} not found in "
+                                 f"pref_file.parent")
+        
+        if not dflat_path.is_file():
+            dref_file = ref_path.joinpath(dflat)
+            if dref_file.is_file():
+                shutil.copy2(dref_file, dflat_path)
+            else:
+                cls.logger.info(f"Dummy reference flat {dflat} not found in "
+                                 f"rdef_file.parent")
+            
+        log_path = Path(raw_file).parent
+        log_file = Path(raw_file).name.replace('fits', 'log')
+        cls._update_step_handler(cls.logger_cal, 
+                                 str(log_path / log_file))
+        
+        # Convert raw_file path to a relative path to respect calwf3's <95-char limit
+        rel_raw_file = os.path.relpath(raw_file)
+        cls.logger.info("MARK I: This is a test.")
+        try:
+            flt_path = raw_file.replace('_raw', '_flt')
+            ima_path = raw_file.replace('_raw', '_ima')
+            
+            if not Path(flt_path).is_file() and not Path(ima_path).is_file():
+                calwf3(rel_raw_file, save_tmp=True, 
+                       verbose=True, log_func=cls.logger_cal.info)
+            else:
+                file_found_msg = f"""Found {Path(flt_path).name} or 
+                    {Path(ima_path).name}. Check flat file keywords in the 
+                    header to ensure dummy flat was used in the reduction."""
+                cls.logger.info(file_found_msg)
+                cls.logger_cal.info(file_found_msg)
+        
+            unflattened_flt['RawFile'] = raw_file
+            unflattened_flt['FltFile'] = flt_path \
+                if Path(flt_path).is_file() else None
+            unflattened_flt['ImaFile'] = ima_path \
+                if Path(ima_path).is_file() else None
+        except Exception as e:
+            cls.logger.error(f"calwf3 execution failed for {raw_file}: {e}")
+            
+            unflattened_flt['RawFile'] = raw_file
+            unflattened_flt['FltFile'] = None
+            unflattened_flt['ImaFile'] = None
+            
         return unflattened_flt
     
     
     
-    def run_calw3_pipe(self, input_df):
+    def run_calw3_pipe(self, input_df, outdir=None, ncores=1):
         
-        # multiprocess with N cores.
+        if outdir is None:
+            outpath = self.params['paths']['output']
+        else:
+            outpath = utils.get_output_directory(name=outdir)
+            self.params['paths']['output'] = outpath
+            
+        # 1. Get unique parent paths from the RawFile column
+        unique_parents = {Path(f).resolve().parent for f in input_df['RawFile']}
         
-        return # unflattened_df
+        # 2. Safety check: Ensure there is only one parent path
+        if len(unique_parents) > 1:
+            self.logger.warning("Multiple source directories detected: "
+                                f"{unique_parents}")
+        
+        # Get the existing parent (using the first one found)
+        current_parent = next(iter(unique_parents))
+        
+        # 3. If it doesn't match outpath, update the whole column
+        if current_parent == Path(outpath).resolve():
+            self.logger.info("Raw file paths match output directory.")
+        else:
+            self.logger.info(f"Updating raw file paths: {current_parent} "
+                             f"-> {outpath}")
+            
+            # Reconstruct paths: outpath + filename
+            input_df['RawFile'] = input_df['RawFile'].apply(
+                lambda x: str(Path(outpath) / Path(x).name)
+            )
+            
+            self.logger.info("Raw file column updated successfully.")
+        
+        # 4. Get dummy flats
+        
+        os.environ['CRDS_SERVER_URL'] = 'https://hst-crds.stsci.edu'
+        os.environ['CRDS_SERVER'] = 'https://hst-crds.stsci.edu'
+        os.environ['CRDS_PATH'] = '/Users/sshenoy/crds_cache'
+        
+        iref_path = self.params['paths']['iref']
+        if iref_path:
+            iref_path = os.path.relpath(iref_path)
+            if not iref_path.endswith('/'):
+                iref_path += '/'
+        os.environ['iref'] = iref_path
+        
+        new_ref_path = utils.get_output_directory(self.params['paths']['nref'])
+        if new_ref_path:
+            new_ref_path = os.path.relpath(new_ref_path)
+            if not new_ref_path.endswith('/'):
+                new_ref_path += '/'
+        os.environ['nref'] = new_ref_path
+
+        worker_args = [file for file in input_df['RawFile']]
+        
+        with multiprocessing.Pool(processes=ncores, 
+                                  initializer=self.__class__._init_worker, 
+                                  initargs=(self.params,)
+                                  ) as pool:
+            unflt_data = pool.map(self._run_single_calw3, worker_args)
+        
+        unflt_df = pd.DataFrame(list(unflt_data))
+        
+        merged_df = pd.merge(input_df, unflt_df, on='RawFile', how='left')
+        
+        return merged_df
     
     
     
