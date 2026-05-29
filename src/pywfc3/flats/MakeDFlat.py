@@ -423,35 +423,40 @@ class MakeDFlat(object):
     
         hdul = fits.open(filename)
         
-        data_stats = stats.describe(hdul['sci'].data, axis=None)
-        sem = stats.sem(hdul['sci'].data, axis=None)
-        mode = stats.mode(hdul['sci'].data, axis=None).mode
-        men, med, std = sigma_clipped_stats(hdul['sci'].data, sigma=outlier_sigma)
+        # Compute descriptive statistics on the SCI extension
+        data_stats = stats.describe(hdul['SCI', 1].data, axis=None)
+        sem = stats.sem(hdul['SCI', 1].data, axis=None)
+        mode = stats.mode(hdul['SCI', 1].data, axis=None).mode
+        men, med, std = sigma_clipped_stats(hdul['SCI', 1].data,
+                                            sigma=outlier_sigma)
         
         bias_thre = med - bias_sigam * std
         source_thre = med + source_sigma * std
         
-        bias_mask = (hdul['sci'].data < bias_thre)
-        source_mask = (hdul['sci'].data > source_thre)
+        # Generate boolean masks for outlier pixels
+        bias_mask = (hdul['SCI', 1].data < bias_thre)
+        source_mask = (hdul['SCI', 1].data > source_thre)
         
-        hdul['sci'].data[bias_mask] = np.nan
-        hdul['sci']. data[source_mask] = np.nan
+        # Apply NaN masking to SCI and ERR extensions
+        hdul['SCI', 1].data[bias_mask] = np.nan
+        hdul['SCI', 1].data[source_mask] = np.nan
         
-        hdul['err'].data[bias_mask] = np.nan
-        hdul['err']. data[source_mask] = np.nan
+        hdul['ERR', 1].data[bias_mask] = np.nan
+        hdul['ERR', 1].data[source_mask] = np.nan
         
-        hdul['dq'].data[:, :] = 0
+        # Reset and update the DQ extension with outlier flags
+        hdul['DQ', 1].data[:, :] = 0
         
-        hdul['dq'].data[bias_mask] = 1
-        hdul['dq']. data[source_mask] = 1
+        hdul['DQ', 1].data[bias_mask] = 1
+        hdul['DQ', 1].data[source_mask] = 1
         
-        nan_cnt = np.count_nonzero(np.isnan(hdul['sci'].data))
-        good_cnt = np.count_nonzero(~np.isnan(hdul['sci'].data))
+        nan_cnt = np.count_nonzero(np.isnan(hdul['SCI', 1].data))
+        good_cnt = np.count_nonzero(~np.isnan(hdul['SCI', 1].data))
     
         per_good = 100 * good_cnt / data_stats.nobs
         
         file_stats['TotPix'] = data_stats.nobs
-        file_stats['NegCnt'] = (hdul['sci'].data < 0).sum()
+        file_stats['NegCnt'] = (hdul['SCI', 1].data < 0).sum()
         file_stats['Min'] = data_stats.minmax[0]
         file_stats['Max'] = data_stats.minmax[1]
         file_stats['Mean'] = data_stats.mean
@@ -736,32 +741,229 @@ class MakeDFlat(object):
         
         merged_df = pd.merge(input_df, unflt_df, on='RawFile', how='left')
         
+        if self.params['processing']['save']:
+            csv_path = Path(self.params['paths']['csvdir']).resolve()
+            csv_name = self.params['instrument']['filter'] + "_unflt.csv"
+            merged_df.to_csv(csv_path / csv_name, index=False)
+        
         return merged_df
     
     
     
-    def update_mask(self, unlaflattened_df):
-        
-        # Read DQ from unflattend, add DQ from MSK 
-        
-        return # unflatted_mask_df
+    def update_mask(self, unflattened_df, save=None):
+        """Combine DQ extensions from FltFile and MaskedFile into a
+        single combined mask using bitwise OR.
+
+        Parameters
+        ----------
+        unflattened_df : pd.DataFrame
+            Output from run_calw3_pipe. Must contain 'FltFile' and
+            'MaskedFile' columns.
+        save : bool, optional
+            If True, save the combined mask as a copy of the flt file
+            with the DQ extension replaced. Defaults to
+            self.params['processing']['save'].
+
+        Returns
+        -------
+        tuple of (pd.DataFrame, dict)
+            updated_df : DataFrame with 'CombMaskFile' column added
+                (paths to *_cmf.fits files if save=True, else None).
+            mask_dict : Dictionary mapping filename IDs
+                (e.g. 'idjb10xvq_flt.fits') to combined DQ arrays.
+        """
+
+        if save is None:
+            save = self.params['processing']['save']
+
+        mask_dict = {}
+        cmf_paths = []
+
+        for idx, row in unflattened_df.iterrows():
+            flt_file = row.get('FltFile')
+            msk_file = row.get('MaskedFile')
+
+            # Skip rows where calwf3 failed (FltFile is None)
+            if flt_file is None or pd.isna(flt_file):
+                self.logger.warning(
+                    f"Skipping row {idx}: FltFile is None "
+                    f"(MaskedFile: {msk_file}). calwf3 may have failed."
+                )
+                cmf_paths.append(None)
+                continue
+
+            # Skip rows where MaskedFile is also missing
+            if msk_file is None or pd.isna(msk_file):
+                self.logger.warning(
+                    f"Skipping row {idx}: MaskedFile is None "
+                    f"(FltFile: {flt_file})."
+                )
+                cmf_paths.append(None)
+                continue
+
+            flt_path = Path(flt_file)
+            file_id = flt_path.name  # e.g., idjb10xvq_flt.fits
+
+            # Read DQ extension from the unflattened flt file
+            with fits.open(flt_file) as flt_hdul:
+                flt_dq = flt_hdul['DQ', 1].data.copy()
+
+            # Read DQ extension from the outlier-masked file
+            with fits.open(msk_file) as msk_hdul:
+                msk_dq = msk_hdul['DQ', 1].data.copy()
+
+            # Validate that both DQ arrays have the same shape
+            if flt_dq.shape != msk_dq.shape:
+                self.logger.warning(
+                    f"Skipping {file_id}: DQ shape mismatch "
+                    f"(flt: {flt_dq.shape}, msk: {msk_dq.shape})."
+                )
+                cmf_paths.append(None)
+                continue
+
+            # Combine masks using bitwise OR
+            combined_dq = np.bitwise_or(flt_dq, msk_dq)
+
+            # Store combined mask in dictionary keyed by filename ID
+            mask_dict[file_id] = combined_dq
+
+            if save:
+                # Save as a copy of flt with DQ replaced by combined mask
+                cmf_name = flt_path.name.replace('_flt', '_cmf')
+                cmf_fullpath = (Path(self.params['paths']['output'])
+                                / cmf_name)
+
+                with fits.open(flt_file) as cmf_hdul:
+                    cmf_hdul['DQ', 1].data = combined_dq
+                    cmf_hdul.writeto(cmf_fullpath, overwrite=True)
+
+                cmf_paths.append(str(cmf_fullpath))
+                self.logger.info(f"Combined mask saved: {cmf_name}")
+            else:
+                cmf_paths.append(None)
+
+        # Add CombMaskFile column to a copy of the dataframe
+        updated_df = unflattened_df.copy()
+        updated_df['CombMaskFile'] = cmf_paths
+
+        # Save updated dataframe to CSV if requested
+        if save:
+            csv_path = Path(self.params['paths']['csvdir']).resolve()
+            csv_name = (self.params['instrument']['filter']
+                        + "_cmf.csv")
+            updated_df.to_csv(csv_path / csv_name, index=False)
+
+        self.df = updated_df
+
+        self.logger.info(
+            f"Combined masks generated for {len(mask_dict)} files."
+        )
+
+        return self.df, mask_dict
     
     
     
-    def generate_flat(self, input_df, mask=None, dthres=None, method="mean",
-                      outfile=None, save=False):
+    def generate_flat(self, input_df, method="mean"):
         
-        #  ensure the combined mask is used. for stacking.
+        if 'CombMaskFile' in input_df.columns:
+            data_files = input_df['CombMaskFile']
+        elif 'FltFile' in input_df.columns:
+            data_files = input_df['FltFile']
+        else:
+            self.logger("Unflattened flat files not found.")
+            sys.exit("Input files not found")
+        
+        sci_data = None
+        err_data = None
+        
+        for i, fl in enumerate(data_files):
+            print(fl)
+            hdul = fits.open(fl)
+            
+            m_dat = fits.getdata(fl.replace('cmf', 'msk'), ext=('DQ', 1))
+            mask = np.array(m_dat, dtype='bool')
+            # mask = np.array(hdul['DQ', 1].data, dtype='bool')
+            
+            hdul['SCI', 1].data[mask] = np.nan
+            hdul['ERR', 1].data[mask] = np.nan
+            
+            if sci_data is None:
+                nx = hdul['SCI', 1].data.shape[0]
+                ny = hdul['SCI', 1].data.shape[1]
+                sci_data = np.zeros((len(input_df),
+                                     hdul['SCI', 1].data.shape[0],
+                                     hdul['SCI', 1].data.shape[1]))
+            
+            if err_data is None:
+                err_data = np.zeros((len(input_df),
+                                     hdul['ERR', 1].data.shape[0],
+                                     hdul['ERR', 1].data.shape[1]))
+            
+            sci_mval = np.nanmean(hdul['SCI', 1].data[101:900, 101:900])
+            err_mval = np.nanmean(hdul['ERR', 1].data[101:900, 101:900])
+            
+            sci_data[i, :, :] = hdul['SCI', 1].data / sci_mval 
+            err_data[i, :, :] = hdul['ERR', 1].data / err_mval
+            
+            hdul.close()
+        
+        fits.writeto('quick_output.fits', sci_data, overwrite=True)
+        
+        with warnings.catch_warnings(action="ignore"):
+            sf_mean, sf_median, sf_std = sigma_clipped_stats(sci_data, 
+                                                         mask_value=np.nan,
+                                                         sigma_lower=3, 
+                                                         sigma_upper=3, 
+                                                         axis=0)
+        
+        if method == "median":
+            flat = sf_median
+        else:
+            flat = sf_mean
+        
+        flat_unc = sf_std / np.sqrt(len(sci_data)) #/ np.nanmedian(flat)
         
         
-        outflat = []
+        ### Set DQ flag for pixels that exhibit AD_Floor.
+        xpix, ypix = np.where(flat < 0.0)
         
+        if len(xpix) >= 1:
+            print(f"\n {len(xpix)} pixels had negative values. These pixels")
+            print(" are NaN-ed in the SCI & ERR arrays and AD_Floor flag")
+            print(" is set the DQ array.") 
+            for x, y in zip(xpix, ypix):
+                    flat[x, y] = np.nan
+                    flat_unc[x, y] = np.nan
+                    mask[x, y] = True
+        else:
+            print(" All pixels passed the AD_FLOOR test.")
+            
         
-        return outflat
+        ### Get headers to save the falt.
+        if self.params['processing']['save']:
+            
+            hdr = fits.getheader(fl, ext=0)
+            
+            phdu = fits.PrimaryHDU(header=hdr)
+            
+            sci_hdu = fits.ImageHDU(data=flat, name='SCI', ver=1)
+            err_hdu = fits.ImageHDU(data=flat_unc, name='ERR', ver=1)
+            flt_mask = np.zeros_like(sci_hdu.data, dtype=np.int16)
+            msk_hdu = fits.ImageHDU(data=flt_mask, name='DQ', ver=1)
+            
+            flat_hdul = fits.HDUList([phdu, sci_hdu, err_hdu, msk_hdu])
+            
+            out_path = Path(self.params['paths']['output'])
+            out_file = f"HST_WFC3_IR_{self.params['instrument']['filter']}" + \
+            "_PFlat.fits"
+            
+            flat_hdul.writeto(str(out_path / out_file), overwrite=True)
+            
+        return flat, flat_unc, mask
     
     
     
-    def update_dflat(self, input_df):
+    def update_dflat(self, pflat):
         
         # divide the outflat with pflat.
         

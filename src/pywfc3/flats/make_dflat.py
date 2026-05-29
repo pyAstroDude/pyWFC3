@@ -71,7 +71,13 @@ def main():
                                   outdir=mdf.params['paths']['output'],
                                   ncores=mdf.params['processing']['cores'])
     
-    print(unflt_df.to_string())
+    comskflt_df, cmf_dict = mdf.update_mask(unflt_df, 
+                                  save=mdf.params['processing']['save'])
+    
+    # print(comskflt_df.columns)
+    
+    flat, flat_unc, mask = mdf.generate_flat(comskflt_df)
+    # print(comskflt_df.to_string())
     # pprint(params)
     # print()
     # sys.exit(f" Successfully processed data for {mdf.band}.")
