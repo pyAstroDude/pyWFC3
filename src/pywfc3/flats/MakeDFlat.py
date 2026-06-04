@@ -645,7 +645,7 @@ class MakeDFlat(object):
         
         # Convert raw_file path to a relative path to respect calwf3's <95-char limit
         rel_raw_file = os.path.relpath(raw_file)
-        cls.logger.info("MARK I: This is a test.")
+        
         try:
             flt_path = raw_file.replace('_raw', '_flt')
             ima_path = raw_file.replace('_raw', '_ima')
@@ -907,7 +907,7 @@ class MakeDFlat(object):
             
             hdul.close()
         
-        fits.writeto('quick_output.fits', sci_data, overwrite=True)
+        # fits.writeto('quick_output.fits', sci_data, overwrite=True)
         
         with warnings.catch_warnings(action="ignore"):
             sf_mean, sf_median, sf_std = sigma_clipped_stats(sci_data, 
