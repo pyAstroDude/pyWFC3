@@ -17,7 +17,8 @@ from pprint import pprint
 
 
 # from pywfc3 import utils
-from pywfc3.flats import MakeDFlat 
+# from pywfc3.flats import MakeDFlat 
+import MakeDFlat
 
 def main():
     "Command line code to call MakeDFlat."
@@ -74,12 +75,19 @@ def main():
     comskflt_df, cmf_dict = mdf.update_mask(unflt_df, 
                                   save=mdf.params['processing']['save'])
     
-    # print(comskflt_df.columns)
+    flat_result = mdf.generate_flat(comskflt_df)
     
-    flat, flat_unc, mask = mdf.generate_flat(comskflt_df)
-    # print(comskflt_df.to_string())
-    # pprint(params)
-    # print()
-    # sys.exit(f" Successfully processed data for {mdf.band}.")
-    
-    
+    if isinstance(flat_result, dict):
+        print(f"Successfully generated time-dependent flats for active blobs: {list(flat_result.keys())}")
+        dflat_paths = mdf.get_new_dflat(flat_result)
+        print(f"Successfully generated divided D-flats for active blobs: {list(dflat_paths.values())}")
+        updated_dflat_path = mdf.update_dflat_with_blobs(flat_result, dflat_paths)
+        print(f"Successfully generated updated D-flat at: {updated_dflat_path}")
+    else:
+        flat, flat_unc, mask = flat_result
+        print("Successfully generated standard master flat field.")
+        dflat_path, dflat_hdul = mdf.get_current_dflat()
+        dflat_hdul.close() 
+
+if __name__ == "__main__":
+	main()
