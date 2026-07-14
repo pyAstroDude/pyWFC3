@@ -16,21 +16,20 @@ import argparse
 from pprint import pprint
 
 
-# from pywfc3 import utils
-# from pywfc3.flats import MakeDFlat 
-import MakeDFlat
+from pywfc3 import utils
+from pywfc3.flats import MakeDFlat 
 
 def main():
     "Command line code to call MakeDFlat."
-    parser = argparse.ArgumentParser(description='Genarate WFC3 IR D-Flat ' +
-                                     'using the input manifest and a JSON.' +
+    parser = argparse.ArgumentParser(description='Generate WFC3 IR D-Flat ' +
+                                     'using the input manifest and a YAML ' +
                                      'parameter file.')
     parser.add_argument('manifest', metavar='Manifest', type=str, nargs='?',
                         help='Name of the input manifest listing ' +
                         'the files to process.')
     parser.add_argument('-p', '--param', dest='yamlfile', type=str,
                         action='store', default=None,
-                        help='Name of the configuration YAML file which ' + 
+                        help='Name of the YAML parameter file which ' + 
                         'lists all the required input parameters to run ' +
                         'the steps from WFC3_ISR_2021-10 to generate the ' +
                         'D-flat.')
@@ -80,14 +79,16 @@ def main():
     if isinstance(flat_result, dict):
         print(f"Successfully generated time-dependent flats for active blobs: {list(flat_result.keys())}")
         dflat_paths = mdf.get_new_dflat(flat_result)
-        print(f"Successfully generated divided D-flats for active blobs: {list(dflat_paths.values())}")
+        print(f"Successfully generated ratioed flats for active blobs: {list(dflat_paths.values())}")
         updated_dflat_path = mdf.update_dflat_with_blobs(flat_result, dflat_paths)
         print(f"Successfully generated updated D-flat at: {updated_dflat_path}")
     else:
         flat, flat_unc, mask = flat_result
         print("Successfully generated standard master flat field.")
-        dflat_path, dflat_hdul = mdf.get_current_dflat()
+        dflat_path, dflat_hdul = mdf.get_current_flat('dflat')
         dflat_hdul.close() 
+
+    mdf.save_pipeline_params()
 
 if __name__ == "__main__":
 	main()

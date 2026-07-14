@@ -518,14 +518,30 @@ class MakeDFlat(object):
         
         merged_df = pd.merge(clean_df, masked_df, on='FILENAME', how='left')
         
-        if self.params['processing']['save']:
-            csv_path = Path(self.params['paths']['csvdir']).resolve()
-            csv_name = self.params['instrument']['filter'] + "_mask_stat.csv"
-            merged_df.to_csv(csv_path / csv_name, index=False)
+        self._write_intermediate_csv(merged_df)
             
         self.df = merged_df
         
         return self.df
+
+    def _write_intermediate_csv(self, df):
+        """Helper method to save intermediate DataFrame columns to a single consolidated CSV file.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The DataFrame to save.
+        """
+        if self.params.get('processing', {}).get('save', True):
+            csv_path = Path(self.params['paths']['csvdir']).resolve()
+            filt = self.params['instrument']['filter']
+            csv_filename = f"{filt}_intermediate_file_info.csv"
+            full_path = csv_path / csv_filename
+            try:
+                df.to_csv(full_path, index=False)
+                self.logger.info(f"Saved intermediate file info to CSV: {full_path}")
+            except Exception as e:
+                self.logger.error(f"Failed to save intermediate CSV file: {e}")
         
     def _set_crds_env(self):
         """Configures CRDS environment variables for STScI servers and local cache."""
@@ -827,10 +843,7 @@ class MakeDFlat(object):
         
         merged_df = pd.merge(input_df, unflt_df, on='RAW with dummy', how='left')
         
-        if self.params['processing']['save']:
-            csv_path = Path(self.params['paths']['csvdir']).resolve()
-            csv_name = self.params['instrument']['filter'] + "_unflt.csv"
-            merged_df.to_csv(csv_path / csv_name, index=False)
+        self._write_intermediate_csv(merged_df)
         
         return merged_df
     
@@ -846,7 +859,7 @@ class MakeDFlat(object):
             Output from run_calw3_pipe. Must contain 'Unflattened FLT' and
             'Source Mask' columns.
         save : bool, optional
-            If True, save the combined mask as a copy of the flt file
+            If True, save the combined mask as a copy of the unflattened FLT file
             with the DQ extension replaced. Defaults to
             self.params['processing']['save'].
 
@@ -959,10 +972,7 @@ class MakeDFlat(object):
 
         # Save updated dataframe to CSV if requested
         if save:
-            csv_path = Path(self.params['paths']['csvdir']).resolve()
-            csv_name = (self.params['instrument']['filter']
-                        + "_cmf.csv")
-            updated_df.to_csv(csv_path / csv_name, index=False)
+            self._write_intermediate_csv(updated_df)
 
         self.df = updated_df
 
@@ -1041,9 +1051,9 @@ class MakeDFlat(object):
             param_blobs = self.params['processing']['blobs']
 
         if param_blobs:
-            self.logger.info("Reading blobs from parameter configuration")
+            self.logger.info("Reading blobs from parameter file")
             if not isinstance(param_blobs, list):
-                self.logger.error("The 'blobs' parameter must be a list in the configuration.")
+                self.logger.error("The 'blobs' parameter must be a list in the parameter file.")
             else:
                 for b_entry in param_blobs:
                     if not isinstance(b_entry, dict):
@@ -1094,13 +1104,63 @@ class MakeDFlat(object):
 
         self.logger.info(f"Loaded {len(blobs_dict)} blobs to process: {list(blobs_dict.keys())}")
         return blobs_dict
-    
-    
+
+    def _write_ds9_region_file(self, blobs, output_path, color='green'):
+        """Writes a list/dict of blobs to a DS9 region file at the specified output path.
+
+        Parameters
+        ----------
+        blobs : dict or list or single blob dict
+            The blobs to include in the region file.
+            Can be the master blobs dict, a single blob dictionary, or a list of blob dicts.
+        output_path : Path or str
+            The complete absolute path (including filename) to save the .reg file.
+        color : str, optional
+            The color of the circles in DS9. Defaults to 'green'.
+        """
+        # 1. Normalize input to a dictionary of blob entries keyed by ID
+        blobs_dict = {}
+        if isinstance(blobs, dict):
+            if 'id' in blobs or 'x' in blobs:
+                # It's a single blob dictionary, wrap it
+                b_id = blobs.get('id', blobs.get('x'))
+                blobs_dict[b_id] = blobs
+            else:
+                # It's already a dictionary of blobs keyed by ID
+                blobs_dict = blobs
+        elif isinstance(blobs, list):
+            for b in blobs:
+                if isinstance(b, dict):
+                    b_id = b.get('id', b.get('x'))
+                    blobs_dict[b_id] = b
+
+        if not blobs_dict:
+            self.logger.warning(f"No blobs to write for region file: {output_path}")
+            return
+
+        # 2. Write the DS9 region file
+        try:
+            out_p = Path(output_path).resolve()
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_p, 'w', encoding='utf-8') as rf:
+                rf.write("# Region file format: DS9 version 4.1\n")
+                rf.write("global color=green select=1 highlite=1 edit=1 move=1 delete=1 include=1 fixed=0 source=1\n")
+                rf.write("image\n")
+                for b_id, b_info in blobs_dict.items():
+                    x = b_info.get('x')
+                    y = b_info.get('y')
+                    radius = b_info.get('radius')
+                    if x is not None and y is not None and radius is not None:
+                        # DS9 circles use 1-based indexing coordinates
+                        rf.write(f"circle({x + 1.0:.1f}, {y + 1.0:.1f}, {radius:.1f}) # color={color} text=\"Blob {b_id}\"\n")
+            self.logger.info(f"Saved DS9 region file at: {out_p}")
+        except Exception as e:
+            self.logger.error(f"Failed to write DS9 region file to {output_path}: {e}")
+
     def generate_flat(self, input_df, blobs=None, method="mean"):
         """Generate master flat field(s). If active blobs are present, stacks
-
-        are generated for each blob using only exposures observed after the
-        blob's appearance date.
+        are generated for each blob for exposures taken both before and after
+        the blob's appearance date.
 
         Parameters
         ----------
@@ -1115,8 +1175,9 @@ class MakeDFlat(object):
         -------
         dict or tuple
             If blobs are processed, returns the updated blobs dictionary containing the
-            stacked 'flat', 'flat_unc', and 'mask' arrays for each active blob. Otherwise,
-            returns a single (flat, flat_unc, mask) tuple.
+            stacked 'flat', 'flat_unc', and 'mask' arrays (corresponding to Post-appearance)
+            for each active blob, as well as the 'flat_pre', 'flat_unc_pre', and 'mask_pre'
+            arrays for Pre-appearance. Otherwise, returns a single (flat, flat_unc, mask) tuple.
         """
         # Determine observation MJDs
         if 'EXPSTART' in input_df.columns:
@@ -1129,6 +1190,11 @@ class MakeDFlat(object):
         if blobs is None:
             blobs = self.get_blob_info()
 
+        # Generate a DS9 region file for all resolved active blobs (requested)
+        filt = self.params['instrument']['filter']
+        reg_path = Path(self.params['paths']['output']) / f"HST_WFC3_IR_{filt}_requested_blobs.reg"
+        self._write_ds9_region_file(blobs, reg_path, color='green')
+
         # If there are no active blobs, generate the standard master flat field
         if not blobs:
             self.logger.info("No active blobs to process. Generating standard master flat.")
@@ -1138,36 +1204,72 @@ class MakeDFlat(object):
         # If there are active blobs, generate time-dependent flats for each
         for b_id, b_info in blobs.items():
             b_app = b_info['appeared']
-            # Filter exposures: obs_mjd >= blob_appeared_date
-            subset_mask = (obs_mjds >= b_app)
-            subset_df = input_df[subset_mask]
+            
+            # --- 1. Post-appearance stack (obs_mjds >= b_app) ---
+            subset_mask_post = (obs_mjds >= b_app)
+            subset_df_post = input_df[subset_mask_post]
 
             self.logger.info(
-                f"Blob {b_id} (appeared: {b_app}): Stacking {len(subset_df)} files "
-                f"observed after appearance MJD."
+                f"Blob {b_id} (appeared: {b_app}): Stacking {len(subset_df_post)} files "
+                f"observed after appearance MJD (Post)."
             )
 
-            if len(subset_df) == 0:
+            flat_post, flat_unc_post, mask_post = None, None, None
+            if len(subset_df_post) == 0:
                 self.logger.warning(
-                    f"No files found observed after MJD {b_app} for blob {b_id}. Skipping."
+                    f"No files found observed after MJD {b_app} for blob {b_id} (Post). Skipping Post stack."
                 )
-                continue
+            else:
+                flat_post, flat_unc_post, mask_post = self._stack_flat_subset(
+                    subset_df_post,
+                    obs_mjds[subset_mask_post],
+                    method=method,
+                    blob_id=b_id,
+                    blob_appeared=b_app,
+                    suffix=f"Post_{b_id}"
+                )
+                
+            # --- 2. Pre-appearance stack (obs_mjds < b_app) ---
+            subset_mask_pre = (obs_mjds < b_app)
+            subset_df_pre = input_df[subset_mask_pre]
 
-            flat, flat_unc, mask = self._stack_flat_subset(
-                subset_df,
-                obs_mjds[subset_mask],
-                method=method,
-                blob_id=b_id,
-                blob_appeared=b_app
+            self.logger.info(
+                f"Blob {b_id} (appeared: {b_app}): Stacking {len(subset_df_pre)} files "
+                f"observed before appearance MJD (Pre)."
             )
-            b_info['flat'] = flat
-            b_info['flat_unc'] = flat_unc
-            b_info['mask'] = mask
+
+            flat_pre, flat_unc_pre, mask_pre = None, None, None
+            if len(subset_df_pre) == 0:
+                self.logger.warning(
+                    f"No files found observed before MJD {b_app} for blob {b_id} (Pre). Skipping Pre stack."
+                )
+            else:
+                flat_pre, flat_unc_pre, mask_pre = self._stack_flat_subset(
+                    subset_df_pre,
+                    obs_mjds[subset_mask_pre],
+                    method=method,
+                    blob_id=b_id,
+                    blob_appeared=b_app,
+                    suffix=f"Pre_{b_id}"
+                )
+
+            # Store the results in blobs dictionary
+            # Downstream logic expects 'flat', 'flat_unc', and 'mask' to refer to post-appearance
+            b_info['flat'] = flat_post
+            b_info['flat_unc'] = flat_unc_post
+            b_info['mask'] = mask_post
+            
+            b_info['flat_pre'] = flat_pre
+            b_info['flat_unc_pre'] = flat_unc_pre
+            b_info['mask_pre'] = mask_pre
+            
+            b_info['rootnames_post'] = sorted(list(set([str(fn).split('_')[0] for fn in subset_df_post['FILENAME']]))) if len(subset_df_post) > 0 else []
+            b_info['rootnames_pre'] = sorted(list(set([str(fn).split('_')[0] for fn in subset_df_pre['FILENAME']]))) if len(subset_df_pre) > 0 else []
 
         return blobs
 
 
-    def _stack_flat_subset(self, subset_df, subset_mjds, method="mean", blob_id=None, blob_appeared=None):
+    def _stack_flat_subset(self, subset_df, subset_mjds, method="mean", blob_id=None, blob_appeared=None, suffix=None):
         """Helper method to stack a subset of flat files and write the FITS data product.
 
         Parameters
@@ -1301,6 +1403,9 @@ class MakeDFlat(object):
             if blob_id is not None:
                 phdu.header.set('BLOB_ID', blob_id, 'Blob ID', after='METHOD')
                 phdu.header.set('BLOB_MJD', blob_appeared, 'Blob appearance MJD', after='BLOB_ID')
+                if suffix is not None:
+                    stage_val = suffix.split('_')[0].upper()
+                    phdu.header.set('STAGE', stage_val, 'Blob occurrence stage (PRE/POST)', after='BLOB_MJD')
 
             # Insert D-FLAT Keywords section banner before NFILES
             phdu.header.insert('NFILES', ('', ''), after=False)
@@ -1324,7 +1429,9 @@ class MakeDFlat(object):
             out_path = Path(self.params['paths']['output']) / 'pflats'
             out_path.mkdir(parents=True, exist_ok=True)
 
-            if blob_id is not None:
+            if suffix is not None:
+                out_file = f"HST_WFC3_IR_{self.params['instrument']['filter']}_{suffix}_PFlat.fits"
+            elif blob_id is not None:
                 out_file = f"HST_WFC3_IR_{self.params['instrument']['filter']}_{blob_id}_PFlat.fits"
             else:
                 out_file = f"HST_WFC3_IR_{self.params['instrument']['filter']}_PFlat.fits"
@@ -1332,63 +1439,106 @@ class MakeDFlat(object):
             flat_hdul.writeto(str(out_path / out_file), overwrite=True)
             self.logger.info(f"Saved stacked flat: {out_path / out_file}")
 
+            # If this is a blob-specific stacked flat, save its corresponding region file
+            if blob_id is not None:
+                try:
+                    blobs_info = self.get_blob_info()
+                    if blob_id in blobs_info:
+                        reg_out_file = out_file.replace('.fits', '.reg')
+                        self._write_ds9_region_file(blobs_info[blob_id], out_path / reg_out_file, color='green')
+                except Exception as e:
+                    self.logger.error(f"Failed to save corresponding region file for blob {blob_id}: {e}")
+
         return flat, flat_unc, mask
     
     
-    def get_current_dflat(self):
-        """Locates and loads the current real reference D-flat for the active filter from the iref directory.
+    def get_current_flat(self, flat_type='dflat'):
+        """Locates and loads the current real reference flat (P-flat or D-flat)
+        for the active filter from the iref directory.
+
+        Parameters
+        ----------
+        flat_type : str
+            Type of flat field to retrieve ('dflat' or 'pflat').
 
         Returns
         -------
-        dflat_path : Path
-            Path to the real reference D-flat FITS file.
+        flat_path : Path
+            Path to the real reference flat FITS file.
         hdul : astropy.io.fits.HDUList
-            Opened HDUList of the D-flat file.
+            Opened HDUList of the flat file.
         """
+        flat_type = flat_type.lower()
+        if flat_type not in ('dflat', 'pflat'):
+            raise ValueError("flat_type must be either 'dflat' or 'pflat'")
+
         # 1. Determine active filter
         band = self.params['instrument']['filter']
         
-        # 2. Check if a specific dflat file is defined in yaml params
-        dflat_filename = self.params.get('instrument', {}).get('dflat', None)
+        # 2. Check if a specific flat file is defined in yaml params
+        flat_filename = self.params.get('instrument', {}).get(flat_type, None)
         
-        if not dflat_filename:
+        if not flat_filename:
             # Fall back to deriving it from wfc3_dum_files mapping
-            dummy_dflat = self.wfc3_dum_files[band]['dflat']
+            dummy_flat = self.wfc3_dum_files[band][flat_type]
             # e.g., '4ac18187i_1s_dfl.fits' -> '4ac18187i_dfl.fits'
-            dflat_filename = dummy_dflat.replace('_1s_dfl.fits', '_dfl.fits')
-            self.logger.info(f"Derived real D-flat filename: {dflat_filename}")
+            # or '4ac1921ji_1s_pfl.fits' -> '4ac1921ji_pfl.fits'
+            suffix = '_1s_dfl.fits' if flat_type == 'dflat' else '_1s_pfl.fits'
+            replacement = '_dfl.fits' if flat_type == 'dflat' else '_pfl.fits'
+            flat_filename = dummy_flat.replace(suffix, replacement)
+            self.logger.info(f"Derived real {flat_type.upper()} filename: {flat_filename}")
         else:
-            self.logger.info(f"Using D-flat filename from config: {dflat_filename}")
+            self.logger.info(f"Using {flat_type.upper()} filename from parameter file: {flat_filename}")
             
-        # 3. Locate the D-flat in the iref directory
+        # 3. Locate the flat in the iref directory
         iref_dir = Path(self.params['paths']['iref']).resolve()
-        dflat_path = iref_dir / dflat_filename
+        flat_path = iref_dir / flat_filename
         
-        if not dflat_path.is_file():
-            warn_msg = f"Real D-flat file not found at: {dflat_path}"
+        if not flat_path.is_file():
+            warn_msg = f"Real {flat_type.upper()} file not found at: {flat_path}"
             self.logger.warning(warn_msg)
             # Try package data resources as a potential fallback
             ref_path = resources.files('pywfc3.data')
-            dref_file = ref_path.joinpath(dflat_filename)
-            if dref_file.is_file():
-                self.logger.info(f"Found {dflat_filename} in package data resources. Copying to iref directory.")
-                iref_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dref_file, dflat_path)
+            ref_file = ref_path.joinpath(flat_filename)
+            if ref_file.is_file():
+                self.logger.info(f"Found {flat_filename} in package data resources.")
+                flat_path = Path(ref_file)
             else:
-                raise FileNotFoundError(f"Real D-flat file {dflat_filename} could not be located in iref ({iref_dir}) or package resources.")
+                raise FileNotFoundError(f"Real {flat_type.upper()} file {flat_filename} could not be located in iref ({iref_dir}) or package resources.")
         
         if 'instrument' not in self.params:
             self.params['instrument'] = {}
-        self.params['instrument']['dflat'] = dflat_filename
+        self.params['instrument'][flat_type] = flat_filename
 
-        self.logger.info(f"Loading current real D-flat: {dflat_path}")
-        hdul = fits.open(dflat_path)
+        self.logger.info(f"Loading current real {flat_type.upper()}: {flat_path}")
+        hdul = fits.open(flat_path)
         
-        return dflat_path, hdul
+        # 4. Verify that the filter in the reference file matches the active instrument filter
+        ref_filter = hdul[0].header.get('FILTER', None)
+            
+        if ref_filter is not None:
+            ref_filter_clean = ref_filter.strip().upper()
+            band_clean = band.strip().upper()
+            if ref_filter_clean != band_clean:
+                err_msg = (
+                    f"FILTER mismatch in reference {flat_type.upper()} '{flat_path.name}': "
+                    f"Header contains '{ref_filter_clean}', but parameter file specifies '{band_clean}'."
+                )
+                self.logger.error(err_msg)
+                hdul.close()
+                raise ValueError(err_msg)
+        else:
+            self.logger.warning(
+                f"Could not find 'FILTER' keyword in primary header of reference {flat_type.upper()}: {flat_path.name}"
+            )
+            
+        return flat_path, hdul
+
     
     # Change this to make_new_dflat
     def get_new_dflat(self, blobs):
-        """Divides the current reference D-flat by each individual stacked P-flat (derived from generate_flat).
+        """Calculates the ratioed flat by dividing the parameter-controlled flat without blobs 
+        (numerator flat) by each individual stacked P-flat with blobs (denominator flat) (derived from generate_flat).
         Saves each resulting FITS file in an output directory named 'dflats'.
 
         Parameters
@@ -1400,23 +1550,26 @@ class MakeDFlat(object):
         Returns
         -------
         output_paths : dict
-            Dictionary mapping blob ID to the Path of the saved D-flat FITS file.
+            Dictionary mapping blob ID to the Path of the saved ratioed flat FITS file.
         """
         if not isinstance(blobs, dict) or not blobs:
             self.logger.warning("No active blobs to process for D-flat update.")
             return {}
 
-        # 1. Get the current reference D-flat
-        dflat_path, dflat_hdul = self.get_current_dflat()
-        dflat_filename = dflat_path.name
+        # 1. Get the current reference P-flat
+        pflat_path, pflat_hdul = self.get_current_flat('pflat')
+        pflat_filename = pflat_path.name
         
-        # 2. Extract arrays from the reference D-flat
-        dflat_sci = dflat_hdul['SCI', 1].data
-        dflat_err = dflat_hdul['ERR', 1].data
-        dflat_dq = dflat_hdul['DQ', 1].data
+        # 2. Extract arrays from the reference P-flat
+        ref_pflat_sci = pflat_hdul['SCI', 1].data
+        ref_pflat_err = pflat_hdul['ERR', 1].data
+        ref_pflat_dq = pflat_hdul['DQ', 1].data
         
         # Determine the active filter name
         filt = self.params['instrument']['filter']
+        
+        # Determine flat without blobs (numerator) source from parameter file settings (default is 'ref')
+        num_choice = self.params.get('processing', {}).get('dflat_numerator', 'ref').lower()
         
         # 3. Setup the output directory
         out_dir = Path(self.params['paths']['output']) / 'dflats'
@@ -1433,33 +1586,53 @@ class MakeDFlat(object):
             pflat_sci = b_info['flat']
             pflat_err = b_info['flat_unc']
             
-            # Safe division: ratio_sci = dflat_sci / pflat_sci
+            # Select the flat without blobs (numerator) data based on user parameter file settings
+            if num_choice == 'pre':
+                if 'flat_pre' in b_info and b_info['flat_pre'] is not None:
+                    num_sci = b_info['flat_pre']
+                    num_err = b_info['flat_unc_pre']
+                    num_source = "Pre-appearance stacked flat (flat without blobs)"
+                else:
+                    self.logger.warning(
+                        f"Pre-appearance flat not available for blob {b_id}. "
+                        f"Falling back to reference P-flat."
+                    )
+                    num_sci = ref_pflat_sci
+                    num_err = ref_pflat_err
+                    num_source = f"Reference P-flat ({pflat_filename}) (fallback flat without blobs)"
+            else:
+                num_sci = ref_pflat_sci
+                num_err = ref_pflat_err
+                num_source = f"Reference P-flat ({pflat_filename}) (flat without blobs)"
+            
+            # Safe division: ratio_sci = num_sci (flat without blobs) / pflat_sci (flat with blobs)
             with np.errstate(divide='ignore', invalid='ignore'):
-                ratio_sci = np.where(pflat_sci != 0, dflat_sci / pflat_sci, 0.0)
+                ratio_sci = np.where(pflat_sci != 0, num_sci / pflat_sci, 0.0)
                 # Safeguard against any unexpected NaN or Inf values
                 ratio_sci[np.isnan(ratio_sci) | np.isinf(ratio_sci)] = 0.0
                 
                 # Safe error propagation
-                term_d = np.where(dflat_sci != 0, dflat_err / dflat_sci, 0.0)
+                term_num = np.where(num_sci != 0, num_err / num_sci, 0.0)
                 term_p = np.where(pflat_sci != 0, pflat_err / pflat_sci, 0.0)
-                ratio_err = ratio_sci * np.sqrt(term_d**2 + term_p**2)
+                ratio_err = ratio_sci * np.sqrt(term_num**2 + term_p**2)
                 # Safeguard against any unexpected NaN or Inf values
                 ratio_err[np.isnan(ratio_err) | np.isinf(ratio_err)] = 0.0
             
-            # 5. Build the new FITS structure based on the reference D-flat
+            # 5. Build the new FITS structure based on the reference P-flat
             # Copy Primary HDU and update header
-            phdu = fits.PrimaryHDU(header=dflat_hdul[0].header.copy())
+            phdu = fits.PrimaryHDU(header=pflat_hdul[0].header.copy())
             
             # Add HISTORY cards documenting the update/division operation
-            phdu.header.add_history("Divided reference D-flat by stacked P-flat.")
+            phdu.header.add_history("Divided flat without blobs by stacked post-appearance flat with blobs (ratioed flat).")
+            phdu.header.add_history(f"Flat without blobs source: {num_source}")
             phdu.header.add_history(f"Target Blob ID: {b_id}")
             phdu.header.add_history(f"Filter: {filt}")
-            phdu.header.add_history(f"Reference D-flat used: {dflat_filename}")
+            phdu.header.add_history(f"Reference P-flat used: {pflat_filename}")
             
             # Create HDUs for SCI, ERR, and DQ extensions
-            sci_hdu = fits.ImageHDU(data=ratio_sci, header=dflat_hdul['SCI', 1].header.copy(), name='SCI', ver=1)
-            err_hdu = fits.ImageHDU(data=ratio_err, header=dflat_hdul['ERR', 1].header.copy(), name='ERR', ver=1)
-            dq_hdu = fits.ImageHDU(data=dflat_dq.copy(), header=dflat_hdul['DQ', 1].header.copy(), name='DQ', ver=1)
+            sci_hdu = fits.ImageHDU(data=ratio_sci, header=pflat_hdul['SCI', 1].header.copy(), name='SCI', ver=1)
+            err_hdu = fits.ImageHDU(data=ratio_err, header=pflat_hdul['ERR', 1].header.copy(), name='ERR', ver=1)
+            dq_hdu = fits.ImageHDU(data=ref_pflat_dq.copy(), header=pflat_hdul['DQ', 1].header.copy(), name='DQ', ver=1)
             
             new_hdul = fits.HDUList([phdu, sci_hdu, err_hdu, dq_hdu])
             
@@ -1468,30 +1641,83 @@ class MakeDFlat(object):
             out_file = out_dir / f"HST_WFC3_IR_{filt}_{b_id}_DFlat.fits"
             
             new_hdul.writeto(str(out_file), overwrite=True)
-            self.logger.info(f"Saved divided D-flat for blob {b_id} at: {out_file}")
+            self.logger.info(f"Saved ratioed flat for blob {b_id} at: {out_file}")
             
-            # Generate DS9 region file for this specific D-flat
-            reg_file = out_dir / f"HST_WFC3_IR_{filt}_{b_id}_DFlat.reg"
+            # Save the corresponding region file for this specific ratioed flat (contains only this blob)
             try:
-                with open(reg_file, 'w', encoding='utf-8') as rf:
-                    rf.write("# Region file format: DS9 version 4.1\n")
-                    rf.write("global color=green select=1 highlite=1 edit=1 move=1 delete=1 include=1 fixed=0 source=1\n")
-                    rf.write("image\n")
-                    for other_id, other_info in blobs.items():
-                        color = "red" if other_id == b_id else "green"
-                        rf.write(f"circle({other_info['x'] + 1.0:.1f}, {other_info['y'] + 1.0:.1f}, {other_info['radius']:.1f}) # color={color} text=\"Blob {other_id}\"\n")
-                self.logger.info(f"Saved DS9 region file for blob {b_id} at: {reg_file}")
+                reg_out_file = out_file.with_suffix('.reg')
+                self._write_ds9_region_file(b_info, reg_out_file, color='green')
             except Exception as e:
-                self.logger.error(f"Failed to write DS9 region file for blob {b_id}: {e}")
+                self.logger.error(f"Failed to save corresponding region file for D-flat {b_id}: {e}")
                 
             output_paths[b_id] = out_file
             
-        dflat_hdul.close()
+        pflat_hdul.close()
         return output_paths
+
+    def _add_dflat_header_comments(self, header, blobs, divided_dflat_paths):
+        """Appends a structured COMMENT section to the primary header of the D-flat
+        detailing the inserted blobs and the lists of Pre/Post exposure rootnames.
+
+        Parameters
+        ----------
+        header : astropy.io.fits.Header
+            The primary header to update.
+        blobs : dict
+            Dictionary of active blobs containing centroid coordinates, radii, and rootnames.
+        divided_dflat_paths : dict
+            Dictionary mapping blob ID to ratioed flat paths.
+        """
+        header.append(fits.Card('COMMENT', "=" * 72))
+        header.append(fits.Card('COMMENT', "                WFC3 IR D-FLAT ACTIVE BLOB UPDATES"))
+        header.append(fits.Card('COMMENT', "=" * 72))
+        header.append(fits.Card('COMMENT', " Blob ID |   X Centroid  |   Y Centroid  |  Radius  | Appearance MJD"))
+        header.append(fits.Card('COMMENT', "---------+---------------+---------------+----------+----------------"))
+        for b_id, b_info in blobs.items():
+            if b_id in divided_dflat_paths:
+                x = b_info.get('x', 0.0)
+                y = b_info.get('y', 0.0)
+                rad = b_info.get('radius', 0.0)
+                app = b_info.get('appeared', 0.0)
+                header.append(fits.Card('COMMENT', 
+                    f"     {b_id:<3} |      {x:>8.2f} |      {y:>8.2f} |   {rad:>6.2f} |     {app:>12.4f}"
+                ))
+        header.append(fits.Card('COMMENT', "-" * 72))
+        header.append(fits.Card('COMMENT', "Detailed exposure lists for each updated blob:"))
+        header.append(fits.Card('COMMENT', "-" * 72))
+        
+        import textwrap
+        for b_id, b_info in blobs.items():
+            if b_id in divided_dflat_paths:
+                header.append(fits.Card('COMMENT', f"Blob {b_id}:"))
+                # Pre-appearance exposures
+                pre_roots = b_info.get('rootnames_pre', [])
+                if pre_roots:
+                    pre_str = ", ".join(pre_roots)
+                    wrapped_pre = textwrap.wrap(pre_str, width=60)
+                    header.append(fits.Card('COMMENT', f"  Pre-appearance exposures (obs_mjds < {b_info.get('appeared', 0.0):.4f}):"))
+                    for line in wrapped_pre:
+                        header.append(fits.Card('COMMENT', f"    {line}"))
+                else:
+                    header.append(fits.Card('COMMENT', "  Pre-appearance exposures: None"))
+                
+                # Post-appearance exposures
+                post_roots = b_info.get('rootnames_post', [])
+                if post_roots:
+                    post_str = ", ".join(post_roots)
+                    wrapped_post = textwrap.wrap(post_str, width=60)
+                    header.append(fits.Card('COMMENT', f"  Post-appearance exposures (obs_mjds >= {b_info.get('appeared', 0.0):.4f}):"))
+                    for line in wrapped_post:
+                        header.append(fits.Card('COMMENT', f"    {line}"))
+                else:
+                    header.append(fits.Card('COMMENT', "  Post-appearance exposures: None"))
+                header.append(fits.Card('COMMENT', "-" * 72))
+                
+        header.append(fits.Card('COMMENT', "=" * 72))
 
     def update_dflat_with_blobs(self, blobs, divided_dflat_paths):
         """Updates the current reference D-flat by inserting circular blob regions
-        from the divided D-flats. Saves the updated D-flat in the output directory
+        from the ratioed flats. Saves the updated D-flat in the output directory
         with a timestamped filename.
 
         Parameters
@@ -1499,7 +1725,7 @@ class MakeDFlat(object):
         blobs : dict
             Dictionary of active blobs containing keys: 'x', 'y', 'radius', etc.
         divided_dflat_paths : dict
-            Dictionary mapping blob ID to the Path of the saved divided D-flat.
+            Dictionary mapping blob ID to the Path of the saved ratioed flat.
 
         Returns
         -------
@@ -1510,8 +1736,12 @@ class MakeDFlat(object):
             self.logger.warning("No active blobs to process for D-flat insertion.")
             return None
 
+        # Store active blobs and ratioed flat paths for parameter file serialization
+        self.active_blobs = blobs
+        self.divided_dflat_paths = divided_dflat_paths
+
         # 1. Get the current reference D-flat
-        dflat_path, dflat_hdul = self.get_current_dflat()
+        dflat_path, dflat_hdul = self.get_current_flat('dflat')
         dflat_filename = dflat_path.name
 
         # Copy the HDUList structure and contents exactly to preserve all extensions
@@ -1527,12 +1757,12 @@ class MakeDFlat(object):
         # 2. Iterate through each active blob
         for b_id, b_info in blobs.items():
             if b_id not in divided_dflat_paths:
-                self.logger.warning(f"No divided D-flat path found for blob {b_id}. Skipping.")
+                self.logger.warning(f"No ratioed flat path found for blob {b_id}. Skipping.")
                 continue
 
             div_path = divided_dflat_paths[b_id]
             if not div_path.is_file():
-                self.logger.warning(f"Divided D-flat file not found at: {div_path}. Skipping.")
+                self.logger.warning(f"Ratioed flat file not found at: {div_path}. Skipping.")
                 continue
 
             # Extract blob parameters
@@ -1545,7 +1775,7 @@ class MakeDFlat(object):
             dist_sq = (x_grid - np_x)**2 + (y_grid - np_y)**2
             mask = dist_sq <= radius**2
 
-            # Load the divided D-flat data
+            # Load the ratioed flat data
             self.logger.info(f"Extracting region for blob {b_id} from {div_path.name}")
             with fits.open(div_path) as div_hdul:
                 div_sci = div_hdul['SCI', 1].data
@@ -1562,6 +1792,9 @@ class MakeDFlat(object):
             updated_hdul[0].header.add_history(history_msg)
             self.logger.info(f"Updated primary header history: {history_msg}")
 
+        # Construct and add a structured COMMENT section documenting active blob updates and file lists
+        self._add_dflat_header_comments(updated_hdul[0].header, blobs, divided_dflat_paths)
+
         # 3. Save the updated D-flat with the updated name
         today_str = datetime.now().strftime("%Y%m%d")
         updated_filename = f"{dflat_path.stem}_updated_{today_str}.fits"
@@ -1573,21 +1806,144 @@ class MakeDFlat(object):
         updated_hdul.writeto(str(updated_dflat_path), overwrite=True)
         self.logger.info(f"Saved final updated D-flat at: {updated_dflat_path}")
 
-        # 4. Generate DS9 region file for the updated D-flat
+        # 4. Generate DS9 region file for the updated D-flat (contains only the updated blobs)
+        updated_blobs = {b_id: b_info for b_id, b_info in blobs.items() if b_id in divided_dflat_paths}
         reg_file = out_dir / f"{dflat_path.stem}_updated_{today_str}.reg"
-        try:
-            with open(reg_file, 'w', encoding='utf-8') as rf:
-                rf.write("# Region file format: DS9 version 4.1\n")
-                rf.write("global color=green select=1 highlite=1 edit=1 move=1 delete=1 include=1 fixed=0 source=1\n")
-                rf.write("image\n")
-                for b_id, b_info in blobs.items():
-                    if b_id in divided_dflat_paths:
-                        rf.write(f"circle({b_info['x'] + 1.0:.1f}, {b_info['y'] + 1.0:.1f}, {b_info['radius']:.1f}) # color=green text=\"Blob {b_id}\"\n")
-            self.logger.info(f"Saved DS9 region file for updated D-flat at: {reg_file}")
-        except Exception as e:
-            self.logger.error(f"Failed to write DS9 region file for updated D-flat: {e}")
+        self._write_ds9_region_file(updated_blobs, reg_file, color='green')
 
         dflat_hdul.close()
         updated_hdul.close()
 
         return updated_dflat_path
+
+    def save_pipeline_params(self, filename=None):
+        """Saves the current pipeline parameters (self.params) to a YAML file
+        in the output directory.
+
+        Parameters
+        ----------
+        filename : str, optional
+            The name of the YAML file. If None, defaults to "pipeline_params_YYYYMMDD_HHMMSS.yaml".
+
+        Returns
+        -------
+        out_file : Path
+            Path to the saved YAML parameter file.
+        """
+        if not hasattr(self, 'params') or not self.params:
+            self.logger.warning("No parameters dictionary to save.")
+            return None
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if filename is None:
+            filename = f"pipeline_params_{timestamp}.yaml"
+
+        # Ensure that newly introduced settings (e.g., dflat_numerator)
+        # show their active default values if omitted by the user.
+        if 'processing' not in self.params:
+            self.params['processing'] = {}
+        if 'dflat_numerator' not in self.params['processing']:
+            self.params['processing']['dflat_numerator'] = 'ref'
+
+        def make_yaml_friendly(data):
+            if isinstance(data, dict):
+                return {k: make_yaml_friendly(v) for k, v in data.items()}
+            elif isinstance(data, list):
+                return [make_yaml_friendly(item) for item in data]
+            elif isinstance(data, Path):
+                return str(data)
+            else:
+                return data
+
+        out_dir = Path(self.params['paths']['output'])
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create params subdirectory for the parameter file
+        params_dir = out_dir / 'params'
+        params_dir.mkdir(parents=True, exist_ok=True)
+        out_file = params_dir / filename
+
+        friendly_params = make_yaml_friendly(self.params)
+
+        # 1. Move [files][input] from YAML to its own final manifest text file
+        manifest_filename = f"input_manifest_{timestamp}.txt"
+        input_files = []
+        if 'files' in friendly_params and 'input' in friendly_params['files']:
+            input_files = friendly_params['files']['input']
+            # Store the relative path under output directory
+            friendly_params['files']['input'] = f"manifest/{manifest_filename}"
+
+        if input_files:
+            # Create manifest subdirectory for the manifest file
+            manifest_dir = out_dir / 'manifest'
+            manifest_dir.mkdir(parents=True, exist_ok=True)
+            manifest_file = manifest_dir / manifest_filename
+            try:
+                with open(manifest_file, 'w', encoding='utf-8') as mf:
+                    for fpath in input_files:
+                        mf.write(f"{fpath}\n")
+                self.logger.info(f"Saved input files list to manifest text file at: {manifest_file}")
+            except Exception as e:
+                self.logger.error(f"Failed to write input manifest file: {e}")
+
+        # 2. Add blobs section with all info (regardless of source) and filenames/rootnames
+        blobs_list = []
+        # If we have active blobs processed during pipeline execution, use them
+        active_source = getattr(self, 'active_blobs', None)
+        
+        # If active_blobs is not available, we can still construct from self.params if present
+        if active_source is None:
+            # Try to load blobs to get a merged set if available
+            try:
+                active_source = self.get_blob_info()
+            except Exception:
+                active_source = {}
+
+        if active_source:
+            for b_id, b_info in active_source.items():
+                b_entry = {
+                    'id': int(b_id),
+                    'x': float(b_info.get('x', 0.0)),
+                    'y': float(b_info.get('y', 0.0)),
+                    'radius': float(b_info.get('radius', 0.0)),
+                    'appeared': float(b_info.get('appeared', 0.0)),
+                }
+                # Rootnames of pre and post files
+                b_entry['rootnames_pre'] = b_info.get('rootnames_pre', [])
+                b_entry['rootnames_post'] = b_info.get('rootnames_post', [])
+
+                # Filenames of individual P and D flats
+                filt = self.params['instrument']['filter']
+                if b_info.get('flat_pre') is not None or b_info.get('rootnames_pre'):
+                    b_entry['pflat_pre'] = f"HST_WFC3_IR_{filt}_Pre_{b_id}_PFlat.fits"
+                else:
+                    b_entry['pflat_pre'] = None
+
+                if b_info.get('flat') is not None or b_info.get('rootnames_post'):
+                    b_entry['pflat_post'] = f"HST_WFC3_IR_{filt}_Post_{b_id}_PFlat.fits"
+                else:
+                    b_entry['pflat_post'] = None
+
+                if hasattr(self, 'divided_dflat_paths') and b_id in self.divided_dflat_paths:
+                    div_path = self.divided_dflat_paths[b_id]
+                    b_entry['dflat_divided'] = div_path.name if isinstance(div_path, Path) else Path(div_path).name
+                else:
+                    b_entry['dflat_divided'] = f"HST_WFC3_IR_{filt}_{b_id}_DFlat.fits"
+                
+                blobs_list.append(b_entry)
+
+        if blobs_list:
+            friendly_params['blobs'] = blobs_list
+            if 'processing' in friendly_params and 'blobs' in friendly_params['processing']:
+                del friendly_params['processing']['blobs']
+
+        self.logger.info(f"Saving active pipeline parameters to: {out_file}")
+        
+        try:
+            with open(out_file, 'w', encoding='utf-8') as f:
+                yaml.dump(friendly_params, f, default_flow_style=False, sort_keys=False)
+            self.logger.info("Successfully saved pipeline parameter file.")
+        except Exception as e:
+            self.logger.error(f"Failed to save pipeline parameter file: {e}")
+            
+        return out_file
