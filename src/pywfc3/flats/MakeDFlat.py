@@ -1151,8 +1151,7 @@ class MakeDFlat(object):
                     y = b_info.get('y')
                     radius = b_info.get('radius')
                     if x is not None and y is not None and radius is not None:
-                        # DS9 circles use 1-based indexing coordinates
-#                         rf.write(f"circle({x + 1.0:.1f}, {y + 1.0:.1f}, {radius:.1f}) # color={color} text=\"Blob {b_id}\"\n")
+                        # DS9 circles use 1-based indexing coordinates (x, y are already 1-based)
                         rf.write(f"circle({x:.1f}, {y:.1f}, {radius:.1f}) # color={color} text=\"Blob {b_id}\"\n")
             self.logger.info(f"Saved DS9 region file at: {out_p}")
         except Exception as e:
@@ -1539,9 +1538,8 @@ class MakeDFlat(object):
     # Change this to make_new_dflat
     def get_new_dflat(self, blobs):
         """Calculates the ratioed flat by dividing each individual stacked P-flat with blobs 
-        (numerator flat) by the parameter-controlled flat without blobs (denominator flat) 
-        (derived from generate_flat). Saves each resulting FITS file in an output directory 
-        named 'dflats'.
+        (numerator flat) by the parameter-controlled flat without blobs (denominator flat) (derived from generate_flat).
+        Saves each resulting FITS file in an output directory named 'dflats'.
 
         Parameters
         ----------
@@ -1774,10 +1772,11 @@ class MakeDFlat(object):
             # Extract blob parameters
             x = b_info['x']
             y = b_info['y']
-            radius = int(b_info['radius']) # is int the correct way to do it
+            radius = b_info['radius']
 
-            np_x = x
-            np_y = y
+            # Convert 1-based detector coordinates to 0-based numpy array coordinates
+            np_x = x - 1.0
+            np_y = y - 1.0
             dist_sq = (x_grid - np_x)**2 + (y_grid - np_y)**2
             mask = dist_sq <= radius**2
 
