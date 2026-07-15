@@ -1537,8 +1537,8 @@ class MakeDFlat(object):
     
     # Change this to make_new_dflat
     def get_new_dflat(self, blobs):
-        """Calculates the ratioed flat by dividing the parameter-controlled flat without blobs 
-        (numerator flat) by each individual stacked P-flat with blobs (denominator flat) (derived from generate_flat).
+        """Calculates the ratioed flat by dividing each individual stacked P-flat with blobs 
+        (numerator flat) by the parameter-controlled flat without blobs (denominator flat) (derived from generate_flat).
         Saves each resulting FITS file in an output directory named 'dflats'.
 
         Parameters
@@ -1568,8 +1568,12 @@ class MakeDFlat(object):
         # Determine the active filter name
         filt = self.params['instrument']['filter']
         
-        # Determine flat without blobs (numerator) source from parameter file settings (default is 'ref')
-        num_choice = self.params.get('processing', {}).get('dflat_numerator', 'ref').lower()
+        # Determine flat without blobs (denominator) source from parameter file settings (default is 'ref')
+        denom_choice = self.params.get('processing', {}).get('dflat_denominator', None)
+        if denom_choice is None:
+            # Fallback to older dflat_numerator for backward compatibility
+            denom_choice = self.params.get('processing', {}).get('dflat_numerator', 'ref')
+        denom_choice = denom_choice.lower()
         
         # 3. Setup the output directory
         out_dir = Path(self.params['paths']['output']) / 'dflats'
@@ -1586,35 +1590,35 @@ class MakeDFlat(object):
             pflat_sci = b_info['flat']
             pflat_err = b_info['flat_unc']
             
-            # Select the flat without blobs (numerator) data based on user parameter file settings
-            if num_choice == 'pre':
+            # Select the flat without blobs (denominator) data based on user parameter file settings
+            if denom_choice == 'pre':
                 if 'flat_pre' in b_info and b_info['flat_pre'] is not None:
-                    num_sci = b_info['flat_pre']
-                    num_err = b_info['flat_unc_pre']
-                    num_source = "Pre-appearance stacked flat (flat without blobs)"
+                    denom_sci = b_info['flat_pre']
+                    denom_err = b_info['flat_unc_pre']
+                    denom_source = "Pre-appearance stacked flat (flat without blobs)"
                 else:
                     self.logger.warning(
                         f"Pre-appearance flat not available for blob {b_id}. "
                         f"Falling back to reference P-flat."
                     )
-                    num_sci = ref_pflat_sci
-                    num_err = ref_pflat_err
-                    num_source = f"Reference P-flat ({pflat_filename}) (fallback flat without blobs)"
+                    denom_sci = ref_pflat_sci
+                    denom_err = ref_pflat_err
+                    denom_source = f"Reference P-flat ({pflat_filename}) (fallback flat without blobs)"
             else:
-                num_sci = ref_pflat_sci
-                num_err = ref_pflat_err
-                num_source = f"Reference P-flat ({pflat_filename}) (flat without blobs)"
+                denom_sci = ref_pflat_sci
+                denom_err = ref_pflat_err
+                denom_source = f"Reference P-flat ({pflat_filename}) (flat without blobs)"
             
-            # Safe division: ratio_sci = num_sci (flat without blobs) / pflat_sci (flat with blobs)
+            # Safe division: ratio_sci = pflat_sci (flat with blobs) / denom_sci (flat without blobs)
             with np.errstate(divide='ignore', invalid='ignore'):
-                ratio_sci = np.where(pflat_sci != 0, num_sci / pflat_sci, 0.0)
+                ratio_sci = np.where(denom_sci != 0, pflat_sci / denom_sci, 0.0)
                 # Safeguard against any unexpected NaN or Inf values
                 ratio_sci[np.isnan(ratio_sci) | np.isinf(ratio_sci)] = 0.0
                 
                 # Safe error propagation
-                term_num = np.where(num_sci != 0, num_err / num_sci, 0.0)
                 term_p = np.where(pflat_sci != 0, pflat_err / pflat_sci, 0.0)
-                ratio_err = ratio_sci * np.sqrt(term_num**2 + term_p**2)
+                term_denom = np.where(denom_sci != 0, denom_err / denom_sci, 0.0)
+                ratio_err = ratio_sci * np.sqrt(term_p**2 + term_denom**2)
                 # Safeguard against any unexpected NaN or Inf values
                 ratio_err[np.isnan(ratio_err) | np.isinf(ratio_err)] = 0.0
             
@@ -1623,8 +1627,8 @@ class MakeDFlat(object):
             phdu = fits.PrimaryHDU(header=pflat_hdul[0].header.copy())
             
             # Add HISTORY cards documenting the update/division operation
-            phdu.header.add_history("Divided flat without blobs by stacked post-appearance flat with blobs (ratioed flat).")
-            phdu.header.add_history(f"Flat without blobs source: {num_source}")
+            phdu.header.add_history("Divided stacked post-appearance flat with blobs by flat without blobs (ratioed flat).")
+            phdu.header.add_history(f"Flat without blobs (denominator) source: {denom_source}")
             phdu.header.add_history(f"Target Blob ID: {b_id}")
             phdu.header.add_history(f"Filter: {filt}")
             phdu.header.add_history(f"Reference P-flat used: {pflat_filename}")
@@ -1838,12 +1842,13 @@ class MakeDFlat(object):
         if filename is None:
             filename = f"pipeline_params_{timestamp}.yaml"
 
-        # Ensure that newly introduced settings (e.g., dflat_numerator)
+        # Ensure that newly introduced settings (e.g., dflat_denominator)
         # show their active default values if omitted by the user.
         if 'processing' not in self.params:
             self.params['processing'] = {}
-        if 'dflat_numerator' not in self.params['processing']:
-            self.params['processing']['dflat_numerator'] = 'ref'
+        if 'dflat_denominator' not in self.params['processing']:
+            # Fall back to existing dflat_numerator if defined, otherwise default to 'ref'
+            self.params['processing']['dflat_denominator'] = self.params['processing'].get('dflat_numerator', 'ref')
 
         def make_yaml_friendly(data):
             if isinstance(data, dict):
