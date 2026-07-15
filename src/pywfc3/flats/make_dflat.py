@@ -41,13 +41,8 @@ def main():
                      "\t Manifest or -p/--param")
     
     mdf = MakeDFlat.MakeDFlat(args)
-    
-    # Get pipeline parameters from (priorities) CLI, user param file and 
-    # default param file.
-    # params = mdf.get_pipeline_params(args)
-    # params = mdf.params
         
-    # # Set up directories path.
+    # Set up directories path.
     mdf.setup_directories()
     
     # Read the manifest
@@ -56,11 +51,11 @@ def main():
     # Make panda dataframe file IDs and FITS header info.
     files_df = mdf.make_dataframe(files_list)
     
-    # # Validate the pandas dataframe.
+    # Validate the pandas dataframe.
     valid_df = mdf.validate_df(files_df, 
                                band=mdf.params['instrument']['filter'])
     
-    # # For each input file mask outliers, sources and update DQ extension.
+    # For each input file mask outliers, sources and update DQ extension.
     masked_df = mdf.mask_outliers(valid_df, 
                                   thresholds=mdf.params['processing']['thresholds'], 
                                   ncores=mdf.params['processing']['cores'])
