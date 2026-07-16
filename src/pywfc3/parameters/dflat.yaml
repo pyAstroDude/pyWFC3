@@ -1,0 +1,23 @@
+# DFlat Pipeline configuration grouped by category
+paths:
+  input: "./"
+  data: "./data/fits"
+  output: "./proc"
+  logdir: "./logs"
+  csvdir: "./proc/csv_files"
+  iref: "/grp/hst/cdbs/iref/"
+  nref: "./data/dummy_flats"
+
+files:
+  manifest: "manifests/manifest.txt"
+
+instrument:
+  filter: "F140W"
+
+processing:
+  save: false
+  cores: 1
+  thresholds:
+    - 2.0 # Outlier Sigma
+    - 5.0 # Bias (low) Sigma
+    - 2.0 # Source (high) Sigma
