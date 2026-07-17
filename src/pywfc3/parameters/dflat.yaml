@@ -13,11 +13,24 @@ files:
 
 instrument:
   filter: "F140W"
+  dflat: "4ac18187i_dfl.fits"
+  pflat: "4ac19224i_pfl.fits"
 
 processing:
   save: false
-  cores: 1
+  maskbits:
+    - 4
+    - 8
+    - 32
+  cores: 10
   thresholds:
     - 2.0 # Outlier Sigma
     - 5.0 # Bias (low) Sigma
     - 2.0 # Source (high) Sigma
+    blobs:
+  - id: 148
+    x: 519.0
+    y: 143.0
+    radius: 10.2
+    appeared: 58309.3771
+  dflat_denominator: "ref"
