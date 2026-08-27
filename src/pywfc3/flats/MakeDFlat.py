@@ -1611,15 +1611,17 @@ class MakeDFlat(object):
             
             # Safe division: ratio_sci = pflat_sci (flat with blobs) / denom_sci (flat without blobs)
             with np.errstate(divide='ignore', invalid='ignore'):
-                ratio_sci = np.where(denom_sci != 0, pflat_sci / denom_sci, 0.0)
-                # Safeguard against any unexpected NaN or Inf values
-                ratio_sci[np.isnan(ratio_sci) | np.isinf(ratio_sci)] = 0.0
+                # Invalid or zero denominator pixels default to neutral unit gain (1.0)
+                ratio_sci = np.where(denom_sci != 0, pflat_sci / denom_sci, 1.0)
+                ratio_sci[np.isnan(ratio_sci) | np.isinf(ratio_sci)] = 1.0
                 
                 # Safe error propagation
                 term_p = np.where(pflat_sci != 0, pflat_err / pflat_sci, 0.0)
                 term_denom = np.where(denom_sci != 0, denom_err / denom_sci, 0.0)
                 ratio_err = ratio_sci * np.sqrt(term_p**2 + term_denom**2)
-                # Safeguard against any unexpected NaN or Inf values
+                
+                # Where denom_sci is zero or invalid, set error to 0.0 (neutral gain with 0 added noise)
+                ratio_err[denom_sci == 0] = 0.0
                 ratio_err[np.isnan(ratio_err) | np.isinf(ratio_err)] = 0.0
             
             # 5. Build the new FITS structure based on the reference P-flat
@@ -1660,7 +1662,7 @@ class MakeDFlat(object):
         return output_paths
 
     def _add_dflat_header_comments(self, header, blobs, divided_dflat_paths):
-        """Appends a structured COMMENT section to the primary header of the D-flat
+        """Appends a structured HISTORY section to the primary header of the D-flat
         detailing the inserted blobs and the lists of Pre/Post exposure rootnames.
 
         Parameters
@@ -1672,52 +1674,52 @@ class MakeDFlat(object):
         divided_dflat_paths : dict
             Dictionary mapping blob ID to ratioed flat paths.
         """
-        header.append(fits.Card('COMMENT', "=" * 72))
-        header.append(fits.Card('COMMENT', "                WFC3 IR D-FLAT ACTIVE BLOB UPDATES"))
-        header.append(fits.Card('COMMENT', "=" * 72))
-        header.append(fits.Card('COMMENT', " Blob ID |   X Centroid  |   Y Centroid  |  Radius  | Appearance MJD"))
-        header.append(fits.Card('COMMENT', "---------+---------------+---------------+----------+----------------"))
+        header.append(fits.Card('HISTORY', "=" * 72))
+        header.append(fits.Card('HISTORY', "                WFC3 IR D-FLAT ACTIVE BLOB UPDATES"))
+        header.append(fits.Card('HISTORY', "=" * 72))
+        header.append(fits.Card('HISTORY', " Blob ID |   X Centroid  |   Y Centroid  |  Radius  | Appearance MJD"))
+        header.append(fits.Card('HISTORY', "---------+---------------+---------------+----------+----------------"))
         for b_id, b_info in blobs.items():
             if b_id in divided_dflat_paths:
                 x = b_info.get('x', 0.0)
                 y = b_info.get('y', 0.0)
                 rad = b_info.get('radius', 0.0)
                 app = b_info.get('appeared', 0.0)
-                header.append(fits.Card('COMMENT', 
+                header.append(fits.Card('HISTORY', 
                     f"     {b_id:<3} |      {x:>8.2f} |      {y:>8.2f} |   {rad:>6.2f} |     {app:>12.4f}"
                 ))
-        header.append(fits.Card('COMMENT', "-" * 72))
-        header.append(fits.Card('COMMENT', "Detailed exposure lists for each updated blob:"))
-        header.append(fits.Card('COMMENT', "-" * 72))
+        header.append(fits.Card('HISTORY', "-" * 72))
+        header.append(fits.Card('HISTORY', "Detailed exposure lists for each updated blob:"))
+        header.append(fits.Card('HISTORY', "-" * 72))
         
         import textwrap
         for b_id, b_info in blobs.items():
             if b_id in divided_dflat_paths:
-                header.append(fits.Card('COMMENT', f"Blob {b_id}:"))
+                header.append(fits.Card('HISTORY', f"Blob {b_id}:"))
                 # Pre-appearance exposures
                 pre_roots = b_info.get('rootnames_pre', [])
                 if pre_roots:
                     pre_str = ", ".join(pre_roots)
                     wrapped_pre = textwrap.wrap(pre_str, width=60)
-                    header.append(fits.Card('COMMENT', f"  Pre-appearance exposures (obs_mjds < {b_info.get('appeared', 0.0):.4f}):"))
+                    header.append(fits.Card('HISTORY', f"  Pre-appearance exposures (obs_mjds < {b_info.get('appeared', 0.0):.4f}):"))
                     for line in wrapped_pre:
-                        header.append(fits.Card('COMMENT', f"    {line}"))
+                        header.append(fits.Card('HISTORY', f"    {line}"))
                 else:
-                    header.append(fits.Card('COMMENT', "  Pre-appearance exposures: None"))
+                    header.append(fits.Card('HISTORY', "  Pre-appearance exposures: None"))
                 
                 # Post-appearance exposures
                 post_roots = b_info.get('rootnames_post', [])
                 if post_roots:
                     post_str = ", ".join(post_roots)
                     wrapped_post = textwrap.wrap(post_str, width=60)
-                    header.append(fits.Card('COMMENT', f"  Post-appearance exposures (obs_mjds >= {b_info.get('appeared', 0.0):.4f}):"))
+                    header.append(fits.Card('HISTORY', f"  Post-appearance exposures (obs_mjds >= {b_info.get('appeared', 0.0):.4f}):"))
                     for line in wrapped_post:
-                        header.append(fits.Card('COMMENT', f"    {line}"))
+                        header.append(fits.Card('HISTORY', f"    {line}"))
                 else:
-                    header.append(fits.Card('COMMENT', "  Post-appearance exposures: None"))
-                header.append(fits.Card('COMMENT', "-" * 72))
+                    header.append(fits.Card('HISTORY', "  Post-appearance exposures: None"))
+                header.append(fits.Card('HISTORY', "-" * 72))
                 
-        header.append(fits.Card('COMMENT', "=" * 72))
+        header.append(fits.Card('HISTORY', "=" * 72))
 
     def update_dflat_with_blobs(self, blobs, divided_dflat_paths):
         """Updates the current reference D-flat by inserting circular blob regions
@@ -1785,17 +1787,15 @@ class MakeDFlat(object):
             with fits.open(div_path) as div_hdul:
                 div_sci = div_hdul['SCI', 1].data
                 div_err = div_hdul['ERR', 1].data
-                div_dq = div_hdul['DQ', 1].data
 
                 # Insert the extracted region into the current D-flat
                 current_sci[mask] = div_sci[mask]
                 current_err[mask] = div_err[mask]
-                current_dq[mask] = div_dq[mask]
 
-            # Update header history
-            history_msg = f"Inserted blob {b_id} at x={x:.2f}, y={y:.2f} with radius={radius:.2f}"
-            updated_hdul[0].header.add_history(history_msg)
-            self.logger.info(f"Updated primary header history: {history_msg}")
+                # Flag pixels inside the blob region with DQ bit 512 (blob flag)
+                current_dq[mask] |= 512
+
+            self.logger.info(f"Inserted blob {b_id} at x={x:.2f}, y={y:.2f} with radius={radius:.2f}")
 
         # Construct and add a structured COMMENT section documenting active blob updates and file lists
         self._add_dflat_header_comments(updated_hdul[0].header, blobs, divided_dflat_paths)
