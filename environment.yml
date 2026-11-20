@@ -1,0 +1,10 @@
+name: pywfc3_utils
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - xpa
+  - pip
+  - pip:
+      - git+https://github.com/pyAstroDude/pyds9-modern.git
+      - .
